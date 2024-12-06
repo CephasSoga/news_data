@@ -8,9 +8,6 @@
 //! ## Reference:
 //! [Official Marketaux Documentation](https://www.marketaux.com/documentation).
 //! 
-//! ## How to use this code:
-//! 
-//! See [Example](https://github.com/CephasSoga/news_data/blob/bf5ef5f12f55a76b66d73880255096c8fb351c9f/src/marketaux.rs#L728).
 
 use std::fmt;
 
