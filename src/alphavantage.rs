@@ -10,54 +10,6 @@
 //! 
 //! [official Alpha Vantage Documentation](https://www.alphavantage.co/documentation/).
 
-// API Parameters
-
-// ❚ Required: function
-// The function of your choice. In this case, function=NEWS_SENTIMENT
-
-// ❚ Optional: tickers
-// The stock/crypto/forex symbols of your choice. 
-// For example: tickers=IBM will filter for articles that mention the IBM ticker;
-// tickers=COIN,CRYPTO:BTC,FOREX:USD will filter for articles that simultaneously mention 
-// Coinbase (COIN), Bitcoin (CRYPTO:BTC), and US Dollar (FOREX:USD) in their content.
-
-// ❚ Optional: topics
-// The news topics of your choice. For example: topics=technology will filter for articles 
-// that write about the technology sector; topics=technology,ipo will filter for articles 
-// that simultaneously cover technology and IPO in their content.
-// Below is the full list of supported topics:
-// Blockchain: blockchain
-// Earnings: earnings
-// IPO: ipo
-// Mergers & Acquisitions: mergers_and_acquisitions
-// Financial Markets: financial_markets
-// Economy - Fiscal Policy (e.g., tax reform, government spending): economy_fiscal
-// Economy - Monetary Policy (e.g., interest rates, inflation): economy_monetary
-// Economy - Macro/Overall: economy_macro
-// Energy & Transportation: energy_transportation
-// Finance: finance
-// Life Sciences: life_sciences
-// Manufacturing: manufacturing
-// Real Estate & Construction: real_estate
-// Retail & Wholesale: retail_wholesale
-// Technology: technology
-
-// ❚ Optional: time_from and time_to
-// The time range of the news articles you are targeting, in YYYYMMDDTHHMM format. 
-// For example: time_from=20220410T0130. If time_from is specified but time_to is missing, 
-// the API will return articles published between the time_from value and the current time.
-
-// ❚ Optional: sort
-// By default, sort=LATEST and the API will return the latest articles first. 
-// You can also set sort=EARLIEST or sort=RELEVANCE based on your use case.
-
-// ❚ Optional: limit
-// By default, limit=50 and the API will return up to 50 matching results. 
-// You can also set limit=1000 to output up to 1000 results.
-
-// ❚ Required: apikey
-// Your API key.
-
 #[allow(dead_code)]
 #[allow(unused_imports)]
 
@@ -66,52 +18,67 @@ use std::fmt;
 use std::collections::HashMap;
 
 use dotenv;
-use serde_json::Value;
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, from_str, to_string};
 use reqwest::{Client, Response, StatusCode};
 
 
 
-/// Define an abstract error enum
+/// Define an abstract error enum.
 #[derive(Debug)]
 pub enum AbstractApiError {
+    /// Abstracts the `BAD_REQUEST` errors.
     RequestError,
+
+    /// Absctracts `Rate Limit Exceeded` errors.
     RateLimitError,
+
+    /// Abstracts `INTERNAL_SERVER_ERROR` errors
     ServerError,
+
+    /// Abstracts `REQUEST_TIMEOUT` errors.
     NetworkError,
+
+    /// Abstracts all other errors,
     UnhandledError,
 }
 
-/// Define custom error types which exttends the `AbstractApiError` Enum
+/// Enum for custom error types that extend the `AbstractApiError` Enum.
 #[derive(Debug)]
 pub enum ApiError {
+    /// Represents a request error with optional `status`, `headers` and `body` details.
     RequestError {
         message: String,
         status: Option<StatusCode>,
         headers: Option<reqwest::header::HeaderMap>,
         body: Option<String>,
     },
+    /// Represents a rate limit error with optional `status`, `headers` and `body` details.
     RateLimitError {
         message: String,
         status: Option<StatusCode>,
         headers: Option<reqwest::header::HeaderMap>,
         body: Option<String>,
     },
+    /// Represents a server error with optional `status`, `headers` and `body` details.
     ServerError {
         message: String,
         status: Option<StatusCode>,
         headers: Option<reqwest::header::HeaderMap>,
         body: Option<String>,
     },
+    /// Represents a JSON parsing error.
     JsonParseError {
         message: String,
     },
+    /// Represents a network error with optional `status`, `headers` and `body` details.
     NetworkError {
         message: String,
         status: Option<StatusCode>,
         headers: Option<reqwest::header::HeaderMap>,
         body: Option<String>,
     },
+    /// Represents an unhandled error with optional `status`, `headers` and `body` details.
     UnhandledError {
         message: String,
         status: Option<StatusCode>,
@@ -166,42 +133,43 @@ pub struct AlphaVantageApiResponse {
     pub feed: Vec<FeedItem>,
 }
 impl AlphaVantageApiResponse {
-    /// Converts the response into a JSON-compatible HashMap
-    pub fn to_json(&self) -> HashMap<String, Value> {
-        let mut map = HashMap::new();
-
-        // Insert basic fields as key-value pairs
-        map.insert("items".to_string(), Value::String(self.items.clone()));
-        map.insert(
-            "sentiment_score_definition".to_string(),
-            Value::String(self.sentiment_score_definition.clone()),
-        );
-        map.insert(
-            "relevance_score_definition".to_string(),
-            Value::String(self.relevance_score_definition.clone()),
-        );
-
-        // Serialize the feed into a JSON array
-        map.insert(
-            "feed".to_string(),
-            Value::Array(self.feed.iter().map(|item| serde_json::to_value(item).unwrap()).collect()),
-        );
-
-        map
+    /// Constructs a `AlphaVantageApiResponse` from a JSON string.
+    ///
+    /// # Arguments
+    ///
+    /// * `json` - A string slice that holds the JSON data.
+    ///
+    /// # Returns
+    ///
+    /// Returns a `Result` containing either the `AlphaVantageApiResponse` or a `serde_json::Error`.
+    pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
+        from_str(json)
     }
 
-    /// Converts a JSON string to an `AlphaVantageApiResponse` instance.
-    pub fn from_json(json_str: &str) -> Result<Self, serde_json::Error> {
-        serde_json::from_str::<AlphaVantageApiResponse>(json_str)
+    /// Serializes the `AlphaVantageApiResponse` to a JSON string.
+    ///
+    /// # Returns
+    ///
+    /// Returns a `Result` containing either the JSON string or a `serde_json::Error`.
+    pub fn to_json(&self) -> Result<String, serde_json::Error> {
+        to_string(self)
     }
 
-    /// Converts a `HashMap<String, Value>` to an `AlphaVantageApiResponse` instance.
+    /// Constructs a `AlphaVantageApiResponse` from a HashMap.
+    ///
+    /// # Arguments
+    ///
+    /// * `map` - A HashMap containing the data to be converted.
+    ///
+    /// # Returns
+    ///
+    /// Returns a `Result` containing either the `AlphaVantageApiResponse` or a `serde_json::Error`.
     pub fn from_hashmap(map: HashMap<String, Value>) -> Result<Self, serde_json::Error> {
-        // Convert HashMap into a JSON string and deserialize it into the struct
-        let json_value = Value::Object(map.into_iter().collect());
-        serde_json::from_value(json_value)
+        let json = serde_json::to_string(&map)?;
+        Self::from_json(&json)
     }
 }
+
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FeedItem {
@@ -273,19 +241,30 @@ impl RequestConfig {
 }
 
 #[derive(Serialize, Deserialize)]
-/// Refers to the HTTP request parameters for Alpha Vantage
+/// Refers to the HTTP request parameters for Alpha Vantage.
 pub struct RequestParams {
     pub path_params: PathParams,
     pub query_params: QueryParams,
 }
 
 #[derive(Serialize, Deserialize)]
-/// Represents the path parameters in an API request
+/// Represents the path parameters in an API request.
+///
+/// This struct is used to encapsulate the endpoint URL for API requests,
+/// allowing for easier management and modification of the endpoint as needed.
 pub struct PathParams {
-    pub endpoint: String, // API endpoint, e.g., "query"
+    pub endpoint: String,
 }
-
 impl PathParams {
+    /// Creates a new instance of `PathParams`.
+    ///
+    /// # Arguments
+    ///
+    /// * `req_config` - A `RequestConfig` instance that contains the base URL for the API.
+    ///
+    /// # Returns
+    ///
+    /// Returns a `PathParams` instance initialized with the endpoint derived from the provided `RequestConfig`.
     pub fn new(req_config: RequestConfig) -> Self {
         Self {
             endpoint: req_config.base_url,
@@ -296,18 +275,76 @@ impl PathParams {
 #[derive(Serialize, Deserialize)]
 /// Represents the query parameters in an API request
 pub struct QueryParams {
-    pub function: String,                  // In this case, function=NEWS_SENTIMENT
-    pub tickers: Option<String>,           // For example: tickers=IBM will filter for articles that mention the IBM ticker
-    pub topics: Option<String>,            // For example: topics=technology will filter for articles that write about the technology sector
-    pub time_from: Option<String>,         // The start of the time range of the news articles you are targeting, in YYYYMMDDTHHMM format
-    pub time_to: Option<String>,           // The end of the time range of the news articles you are targeting, in YYYYMMDDTHHMM format
-    pub sort: Option<String>,              // Can be set to LATEST, EARLIEST or RELEVANCE based on your use case
-    pub limit: Option<i32>,                // The count you want for outputs. Defaults to 50
-    pub apikey: String,                    // Your Alpha vantage API key
+    /// The function of your choice. In this case, function=NEWS_SENTIMENT
+    pub function: String,
+
+    /// Comma-separated stock/crypto/forex symbols to filter articles (e.g., "IBM").
+    /// 
+    /// For example: `tickers=IBM` will filter for articles that mention the IBM ticker; 
+    /// `tickers=COIN,CRYPTO:BTC,FOREX:USD` will filter for articles that simultaneously mention Coinbase (COIN), 
+    /// Bitcoin (CRYPTO:BTC), and US Dollar (FOREX:USD) in their content.
+    pub tickers: Option<String>,
+
+    /// Comma-separated topics to filter articles (e.g., "technology").
+    ///
+    /// ## Available topics:
+    ///
+    /// - Blockchain: `blockchain`
+    /// - Earnings: `earnings`
+    /// - IPO: `ipo`
+    /// - Mergers & Acquisitions: `mergers_and_acquisitions`
+    /// - Financial Markets: `financial_markets`
+    /// - Economy - Fiscal Policy (e.g., tax reform, government spending): `economy_fiscal`
+    /// - Economy - Monetary Policy (e.g., interest rates, inflation): `economy_monetary`
+    /// - Economy - Macro/Overall: `economy_macro`
+    /// - Energy & Transportation: `energy_transportation`
+    /// - Finance: `finance`
+    /// - Life Sciences: `life_sciences`
+    /// - Manufacturing: `manufacturing`
+    /// - Real Estate & Construction: `real_estate`
+    /// - Retail & Wholesale: `retail_wholesale`
+    /// - Technology: `technology`
+    pub topics: Option<String>,
+
+    /// Start time for filtering articles in YYYYMMDDTHHMM format.
+    /// 
+    /// For example: time_from=20220410T0130.
+    pub time_from: Option<String>,
+
+    /// End time for filtering articles in YYYYMMDDTHHMM format.
+    /// 
+    /// If time_from is specified but time_to is missing, 
+    /// the API will return articles published between the time_from value and the current time
+    pub time_to: Option<String>,
+
+    /// Sort order: "LATEST", "EARLIEST", or "RELEVANCE".
+    pub sort: Option<String>,
+
+    /// Maximum number of results to return (default is 50).
+    /// You can also set limit=1000 to output up to 1000 results.           
+    pub limit: Option<i32>,
+
+    /// Your Alpha Vantage API key. Claim your free API Key [here](https://www.alphavantage.co/support/#api-key).             
+    pub apikey: String,                    
 }
 
 impl QueryParams {
-    /// Creates a new instance of QueryParams with required and optional parameters.
+    /// Creates a new instance of `QueryParams` with required and optional parameters.
+    ///
+    /// # Parameters
+    /// 
+    /// - `req_config`: A reference to the `RequestConfig` instance containing the API key.
+    /// - `function`: The function to be called (e.g., "NEWS_SENTIMENT").
+    /// - `tickers`: Optional comma-separated stock/crypto/forex symbols to filter articles.
+    /// - `topics`: Optional comma-separated topics to filter articles.
+    /// - `time_from`: Optional start time for filtering articles in `YYYYMMDDTHHMM` format.
+    /// - `time_to`: Optional end time for filtering articles in `YYYYMMDDTHHMM` format.
+    /// - `sort`: Optional sort order ("LATEST", "EARLIEST", or "RELEVANCE").
+    /// - `limit`: Optional maximum number of results to return (default is 50).
+    ///
+    /// # Returns
+    ///
+    /// Returns a `QueryParams` instance populated with the provided parameters.
     pub fn new(
         req_config: &RequestConfig,
         function: &str,
@@ -365,6 +402,16 @@ pub struct RequestManager {
     client: Client
 }
 impl RequestManager {
+    
+    /// Creates a new instance of `RequestManager`.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `client` - An instance of `reqwest::Client` used to send HTTP requests.
+    /// 
+    /// # Returns
+    /// 
+    /// Returns a `RequestManager` instance initialized with the provided client.
     pub fn new(client: Client) -> Self {
         Self {client}
     }
@@ -424,14 +471,14 @@ impl RequestManager {
                 if e.is_timeout() || e.is_connect() {
                     ApiError::NetworkError {
                         message: e.to_string(),
-                        status: Some(StatusCode::GATEWAY_TIMEOUT),
+                        status: Some(StatusCode::REQUEST_TIMEOUT), //Error: 408 - substitutes to `None`: normaly error is not received here, as the rea did not even go through,
                         headers: None,
                         body: None,
                     }
                 } else {
                     ApiError::RequestError{
                         message: e.to_string(),
-                        status: Some(StatusCode::BAD_REQUEST),
+                        status: Some(StatusCode::BAD_REQUEST),  // Error 400
                         headers: None,
                         body: None
                     }
