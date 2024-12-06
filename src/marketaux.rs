@@ -7,6 +7,10 @@
 //! 
 //! ## Reference:
 //! [Official Marketaux Documentation](https://www.marketaux.com/documentation).
+//! 
+//! ## How to use this code:
+//! 
+//! See [Example](https://github.com/CephasSoga/news_data/blob/bf5ef5f12f55a76b66d73880255096c8fb351c9f/src/marketaux.rs#L728).
 
 use std::fmt;
 
@@ -169,17 +173,17 @@ pub struct Meta {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct NewsItem {
-    pub uuid: String,
-    pub title: String,
-    pub description: String,
-    pub keywords: String,
-    pub snippet: String,
-    pub url: String,
-    pub image_url: String,
-    pub language: String,
+    pub uuid: Option<String>,
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub keywords: Option<String>,
+    pub snippet: Option<String>,
+    pub url: Option<String>,
+    pub image_url: Option<String>,
+    pub language: Option<String>,
     #[serde(rename = "published_at")]
-    pub published_at: String, // you can change this to DateTime if needed
-    pub source: String,
+    pub published_at: Option<String>, // you can change this to DateTime if needed
+    pub source: Option<String>,
     pub relevance_score: Option<f64>,
     pub entities: Vec<Entity>,
     pub similar: Vec<Value>, // Assuming similar items can vary in structure
@@ -187,13 +191,13 @@ pub struct NewsItem {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Entity {
-    pub symbol: String,
-    pub name: String,
+    pub symbol: Option<String>,
+    pub name: Option<String>,
     pub exchange: Option<String>,
     pub exchange_long: Option<String>,
-    pub country: String,
-    pub r#type: String, // Using `r#type` to avoid conflicting with the `type` keyword
-    pub industry: String,
+    pub country: Option<String>,
+    pub r#type: Option<String>, // Using `r#type` to avoid conflicting with the `type` keyword
+    pub industry: Option<String>,
     pub match_score: f64,
     pub sentiment_score: f64,
     pub highlights: Vec<Highlight>,
@@ -201,10 +205,10 @@ pub struct Entity {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Highlight {
-    pub highlight: String,
-    pub sentiment: f64,
+    pub highlight: Option<String>,
+    pub sentiment: Option<f64>,
     #[serde(rename = "highlighted_in")]
-    pub highlighted_in: String,
+    pub highlighted_in: Option<String>,
 }
 
 
@@ -230,7 +234,7 @@ impl RequestConfig {
 
         // Retrieve the API key from the environment
         let apikey = std::env::var("MARKETAUX_API_KEY")
-            .expect("ALPHA_VANTAGE_API_KEY env variable is not set!");
+            .expect("MARKETAUX_API_KEY env variable is not set!");
 
         // Define the base URL for API requests
         let base_url = String::from("https://api.marketaux.com/v1/news");
@@ -257,7 +261,6 @@ pub struct PathParams {
     /// Formats Base Url and API Endpoint in a single string object.
     pub url: String,
 }
-
 impl PathParams {
     
     /// Creates a new instance of `PathParams`.
@@ -278,7 +281,7 @@ impl PathParams {
     /// ## Returns:
     ///
     /// Returns a new instance of `PathParams` with the constructed URL.
-    pub fn new(req_config: RequestConfig, endpoint: String) -> Self {
+    pub fn new(req_config: &RequestConfig, endpoint: String) -> Self {
         Self {
             url: format!("{}/{}", req_config.base_url, endpoint),
         }
@@ -650,8 +653,22 @@ impl RequestManager {
             return Err(error);
         }
 
-        let response_json = response.json::<MarketAuxResponse>()
-            .await.map_err(|e| ApiError::JsonParseError{message: e.to_string(),})?; // Handle JSON parsing error
+        // # Attempt to parse the JSON response.
+        // ** The following lines can have performance implications, especially if the response body is large. 
+        // ** This is because it reads the entire response body into memory as a String, which can be inefficient for large payloads.
+        // ** If the API changes in the future, uncomment these lines to investigate the parsing errors.
+        //: let response_text = response.text().await.unwrap_or_else(|_| String::from("Failed to read body"));
+        //: let response_json: AlphaVantageApiResponse = serde_json::from_str(&response_text)
+        //:    .map_err(|e| {
+        //:        eprintln!("Raw response body: {}", response_text);
+        //:        ApiError::JsonParseError { message: e.to_string() }
+        //:    })?; // Handle JSON parsing error
+
+        // Attempt to parse the JSON response directly
+        let response_json: MarketAuxResponse = response.json().await.map_err(|e| {
+            eprintln!("Failed to read body: {:?}", e);
+            ApiError::JsonParseError { message: e.to_string() }
+        })?; // Handle JSON parsing error
 
         Ok(response_json)
     }
@@ -723,4 +740,82 @@ impl RequestManager {
             },
         }
     }
+}
+
+
+/// Asynchronously fetches financial news articles from the Marketaux API.
+///
+/// This function serves as an example of how to use the `RequestConfig`, `PathParams`, and `QueryParams`
+/// structs to construct a request to the Marketaux API. It initializes the necessary configurations,
+/// constructs the request parameters, and sends a GET request to retrieve news articles.
+///
+/// # Returns
+///
+/// Returns a `Result` containing either:
+/// - `MarketAuxResponse`: A successful response containing the fetched news articles and metadata.
+/// - `ApiError`: An error that occurred during the request process, which can include network errors,
+///   rate limit errors, server errors, or JSON parsing errors.
+///
+/// # Example
+///
+/// ```rust
+/// let result = example().await;
+/// match result {
+///     Ok(response) => println!("Fetched news: {:?}", response),
+///     Err(e) => eprintln!("Error fetching news: {}", e),
+/// }
+/// ```
+///
+pub async fn example() -> Result<MarketAuxResponse, ApiError> {
+
+    // Load the API configuration, including the API key and base URL.
+    let config = RequestConfig::new();
+
+    // Create path parameters for the API request, specifying the endpoint "all".
+    let path = PathParams::new(&config, "all".to_string());
+
+    // Construct query parameters for the API request, currently set to None for all optional fields.
+    let query = QueryParams::new(&config, 
+        None, // Symbols, 
+        None, // entity_types, 
+        None, // industries, 
+        None, // countries, 
+        None, // sentiment_gte, 
+        None, // sentiment_lte, 
+        None, // min_match_score, 
+        None, // filter_entities, 
+        None, // must_have_entities, 
+        None, // group_similar, 
+        None, // search, 
+        None, // domains, 
+        None, // exclude_domains, 
+        None, // source_ids, 
+        None, // exclude_source_ids, 
+        None, // language, 
+        None, // published_before, 
+        None, // published_after, 
+        None, // published_on, 
+        None, // sort, 
+        None, // sort_order, 
+        None, // limit, 
+        None); // page
+
+    // Create a new HTTP client for making requests.
+    let client = Client::new();
+
+    // Initialize the request manager with the created client.
+    let req_manager = RequestManager::new(client);
+
+    // Send a GET request to the Marketaux API and await the result.
+    let result = req_manager.get(path, Some(query)).await
+        .map_err(|e|  {
+            eprintln!("Error during GET request: {}", e); // Log error
+            e // Repropagate error
+        })?;
+
+    // Print the result of the GET request to the console.
+    println!("Result of GET req: {:?}", result);
+
+    // Return the result of the API request.
+    Ok(result)
 }

@@ -173,33 +173,33 @@ impl AlphaVantageApiResponse {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FeedItem {
-    pub title: String,
-    pub url: String,
-    pub time_published: String,
+    pub title: Option<String>,
+    pub url: Option<String>,
+    pub time_published: Option<String>,
     pub authors: Vec<String>,
-    pub summary: String,
-    pub banner_image: String,
-    pub source: String,
-    pub category_within_source: String,
-    pub source_domain: String,
+    pub summary: Option<String>,
+    pub banner_image: Option<String>,
+    pub source: Option<String>,
+    pub category_within_source: Option<String>,
+    pub source_domain: Option<String>,
     pub topics: Vec<Topic>,
     pub overall_sentiment_score: f64,
-    pub overall_sentiment_label: String,
+    pub overall_sentiment_label: Option<String>,
     pub ticker_sentiment: Vec<TickerSentiment>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Topic {
-    pub topic: String,
-    pub relevance_score: String,
+    pub topic: Option<String>,
+    pub relevance_score: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TickerSentiment {
-    pub ticker: String,
-    pub relevance_score: String,
-    pub ticker_sentiment_score: String,
-    pub ticker_sentiment_label: String,
+    pub ticker: Option<String>,
+    pub relevance_score: Option<String>,
+    pub ticker_sentiment_score: Option<String>,
+    pub ticker_sentiment_label: Option<String>,
 }
 
 /// Refers to the requests configuration. This sruct centralizes theconfiguration control.
@@ -234,7 +234,7 @@ impl RequestConfig {
             .expect("ALPHA_VANTAGE_API_KEY env variable is not set!");
 
         // Define the base URL for API requests
-        let base_url = String::from("https://www.alphavantage.co");
+        let base_url = String::from("https://www.alphavantage.co/query");
 
         Self { apikey, base_url }
     }
@@ -265,9 +265,9 @@ impl PathParams {
     /// # Returns
     ///
     /// Returns a `PathParams` instance initialized with the endpoint derived from the provided `RequestConfig`.
-    pub fn new(req_config: RequestConfig) -> Self {
+    pub fn new(req_config: &RequestConfig) -> Self {
         Self {
-            endpoint: req_config.base_url,
+            endpoint: req_config.base_url.clone(),
         }
     }
 }
@@ -510,8 +510,22 @@ impl RequestManager {
             return Err(error);
         }
 
-        let response_json = response.json::<AlphaVantageApiResponse>()
-            .await.map_err(|e| ApiError::JsonParseError{message: e.to_string(),})?; // Handle JSON parsing error
+        // # Attempt to parse the JSON response.
+        // ** The following lines can have performance implications, especially if the response body is large. 
+        // ** This is because it reads the entire response body into memory as a String, which can be inefficient for large payloads.
+        // ** If the API changes in the future, uncomment these lines to investigate the parsing errors.
+        //: let response_text = response.text().await.unwrap_or_else(|_| String::from("Failed to read body"));
+        //: let response_json: AlphaVantageApiResponse = serde_json::from_str(&response_text)
+        //:    .map_err(|e| {
+        //:        eprintln!("Raw response body: {}", response_text);
+        //:        ApiError::JsonParseError { message: e.to_string() }
+        //:    })?; // Handle JSON parsing error
+
+        // Attempt to parse the JSON response directly
+        let response_json: AlphaVantageApiResponse = response.json().await.map_err(|e| {
+            eprintln!("Failed to read body: {:?}", e);
+            ApiError::JsonParseError { message: e.to_string() }
+        })?; // Handle JSON parsing error
 
         Ok(response_json)
     }
@@ -583,4 +597,67 @@ impl RequestManager {
             },
         }
     }
+}
+
+/// Example function to demonstrate how to use the Alpha Vantage API.
+///
+/// This function initializes the request configuration, constructs the path and query parameters,
+/// creates a new HTTP client, and sends a GET request to the Alpha Vantage API for news sentiment data.
+///
+/// # Returns
+///
+/// Returns a `Result` containing either:
+/// - `AlphaVantageApiResponse`: The response from the API containing news sentiment data.
+/// - `ApiError`: An error if the request fails or if there is an issue with the response.
+///
+/// # Errors
+///
+/// This function can return various errors, including:
+/// - `ApiError::NetworkError`: If there is a network issue while sending the request.
+/// - `ApiError::RequestError`: If there is a general request error.
+/// - `ApiError::RateLimitError`: If the rate limit for API requests has been exceeded.
+/// - `ApiError::ServerError`: If there is a server error from the API.
+/// - `ApiError::JsonParseError`: If there is an error parsing the JSON response.
+///
+/// # Example
+///
+/// ```
+/// let result = example().await;
+/// match result {
+///     Ok(response) => println!("Received response: {:?}", response),
+///     Err(e) => eprintln!("Error occurred: {}", e),
+/// }
+/// ```
+pub async fn example() -> Result<AlphaVantageApiResponse, ApiError> {
+    // Create configuration.
+    let config = RequestConfig::new();
+    // Path parameters
+    let path = PathParams::new(&config);
+    // Query parmaters
+    let query = QueryParams::new(
+        &config, 
+        "NEWS_SENTIMENT",   // You should not use anything else
+        None, // Tickers
+        None, // Topics 
+        None, // Time_from 
+        None, // Time_to
+        None, // Sort
+        None  // Limit
+    );
+    
+    // Request Client
+    let client = Client::new();
+    // Request Manger
+    let req_manager = RequestManager::new(client);
+    // Make the GET request here.
+    let result = req_manager.get(path, query).await
+        .map_err(|e| {
+            eprintln!("Error during GET request: {}", e); // Log the error
+            e // Re-propagate the error without changes
+        })?;
+
+    println!("Result of GET request: {:?}", result);
+
+    // Return that result
+    Ok(result)
 }
