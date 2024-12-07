@@ -13,14 +13,14 @@
 #[allow(dead_code)]
 #[allow(unused_imports)]
 
-use std::env;
 use std::fmt;
 use std::collections::HashMap;
 
-use dotenv;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, from_str, to_string};
 use reqwest::{Client, Response, StatusCode};
+
+use crate::config::ValueConfig;
 
 
 
@@ -224,14 +224,9 @@ pub struct  RequestConfig{
 impl RequestConfig {
     /// Creates a new instance of `RequestConfig`.
     /// 
-    /// Reads API key form env variables. So Make sure you set **ALPHA_VANTAGE_API_KEY** .
-    pub fn new() -> Self {
-        // Load environment variables from `.env` file
-        dotenv::dotenv().ok();
-
-        // Retrieve the API key from the environment
-        let apikey = std::env::var("ALPHA_VANTAGE_API_KEY")
-            .expect("ALPHA_VANTAGE_API_KEY env variable is not set!");
+    /// Reads API key form Config.toml, somake sure you have that set and matching the format inside `./config.toml` .
+    pub fn new(value_config: &ValueConfig) -> Self {
+        let apikey = value_config.api.alphavantage.clone();
 
         // Define the base URL for API requests
         let base_url = String::from("https://www.alphavantage.co/query");
@@ -604,13 +599,18 @@ impl RequestManager {
 /// This function initializes the request configuration, constructs the path and query parameters,
 /// creates a new HTTP client, and sends a GET request to the Alpha Vantage API for news sentiment data.
 ///
-/// # Returns
+/// ## Argument:
+/// 
+/// - value_config (&ValueConfig): this holds the variables extracted from the config.toml file.
+/// We use it for flexibility and we always pass it as an argument so that we can avoid reading
+/// the configuration file every single time functions are called.
+/// ## Returns
 ///
 /// Returns a `Result` containing either:
 /// - `AlphaVantageApiResponse`: The response from the API containing news sentiment data.
 /// - `ApiError`: An error if the request fails or if there is an issue with the response.
 ///
-/// # Errors
+/// ## Errors
 ///
 /// This function can return various errors, including:
 /// - `ApiError::NetworkError`: If there is a network issue while sending the request.
@@ -619,7 +619,7 @@ impl RequestManager {
 /// - `ApiError::ServerError`: If there is a server error from the API.
 /// - `ApiError::JsonParseError`: If there is an error parsing the JSON response.
 ///
-/// # Example
+/// ## Example
 ///
 /// ```
 /// let result = example().await;
@@ -628,9 +628,9 @@ impl RequestManager {
 ///     Err(e) => eprintln!("Error occurred: {}", e),
 /// }
 /// ```
-pub async fn example() -> Result<AlphaVantageApiResponse, ApiError> {
+pub async fn example(value_config: &ValueConfig) -> Result<AlphaVantageApiResponse, ApiError> {
     // Create configuration.
-    let config = RequestConfig::new();
+    let config = RequestConfig::new(value_config);
     // Path parameters
     let path = PathParams::new(&config);
     // Query parmaters

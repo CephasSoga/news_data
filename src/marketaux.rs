@@ -15,6 +15,8 @@ use reqwest::{Client, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, from_str, to_string};
 
+use crate::config::ValueConfig;
+
 /// Define an abstract error enum.
 #[derive(Debug)]
 pub enum AbstractApiError {
@@ -216,22 +218,18 @@ pub struct RequestConfig {
 impl RequestConfig {
     /// Creates a new instance of `RequestConfig`.
     /// 
-    /// This method initializes a new `RequestConfig` by loading the API key from environment variables.
-    /// It expects the environment variable **MARKETAUX_API_KEY** to be set. If the variable is not set,
-    /// it will panic with an error message.
+    /// This method reads the Marketaux API key from your config.toml.
+    /// You want to make sure that file is all set and matching the stucture inside the config.rs file. 
     ///
     /// The method also defines the base URL for API requests, which is set to "https://api.marketaux.com/v1/news".
     ///
     /// ## Returns:
     ///
     /// Returns an instance of `RequestConfig` containing the API key and base URL.
-    pub fn new() -> Self {
-        // Load environment variables from `.env` file
-        dotenv::dotenv().ok();
-
-        // Retrieve the API key from the environment
-        let apikey = std::env::var("MARKETAUX_API_KEY")
-            .expect("MARKETAUX_API_KEY env variable is not set!");
+    pub fn new(value_config: &ValueConfig) -> Self {
+        
+        // Reads API key from values configuration file
+        let apikey = value_config.api.marketaux.clone();
 
         // Define the base URL for API requests
         let base_url = String::from("https://api.marketaux.com/v1/news");
@@ -746,14 +744,20 @@ impl RequestManager {
 /// structs to construct a request to the Marketaux API. It initializes the necessary configurations,
 /// constructs the request parameters, and sends a GET request to retrieve news articles.
 ///
-/// # Returns
+/// ## Argument:
+/// 
+/// - value_config (&ValueConfig): this holds the variables extracted from the config.toml file.
+/// We use it for flexibility and we always pass it as an argument so that we can avoid reading
+/// the configuration file every single time functions are called.
+/// 
+/// ## Returns
 ///
 /// Returns a `Result` containing either:
 /// - `MarketAuxResponse`: A successful response containing the fetched news articles and metadata.
 /// - `ApiError`: An error that occurred during the request process, which can include network errors,
 ///   rate limit errors, server errors, or JSON parsing errors.
 ///
-/// # Example
+/// ## Example
 ///
 /// ```rust
 /// let result = example().await;
@@ -763,10 +767,10 @@ impl RequestManager {
 /// }
 /// ```
 ///
-pub async fn example() -> Result<MarketAuxResponse, ApiError> {
+pub async fn example(value_config: &ValueConfig) -> Result<MarketAuxResponse, ApiError> {
 
     // Load the API configuration, including the API key and base URL.
-    let config = RequestConfig::new();
+    let config = RequestConfig::new(value_config);
 
     // Create path parameters for the API request, specifying the endpoint "all".
     let path = PathParams::new(&config, "all".to_string());

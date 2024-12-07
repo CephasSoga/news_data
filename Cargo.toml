@@ -4,7 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-serde_urlencoded = "0.7"  # or the latest version
+config = "0.13"                                         # To parse configuration .toml files
+futures = "0.3"
+mongodb = "2.6"                                         # MongoDB driver
+serde_urlencoded = "0.7"                                # or the latest version
 reqwest = {version = "0.11.16", features = ["json"] }
 twitter-v2 = "0.1.8"
 tokio = {version = "1.42.0", features = ["full"]}       # Asynchronous Rust
