@@ -66,7 +66,7 @@ async fn main() -> Result<(), FetchNewsError> {
     println!("Fetching data....");
     loop {
         match fetch_news_data(&value_config).await {
-            Ok(data) => println!("Fetched news data: {:?}", data),
+            Ok(_data) => println!("Done."),
             Err(e) => eprintln!("Error fetching news data: {}", e),
         }
 

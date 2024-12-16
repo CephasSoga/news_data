@@ -850,7 +850,7 @@ pub async fn run(value_config: &ValueConfig) -> Result<MarketAuxResponse, ApiErr
         })?;
 
     // Print the result of the GET request to the console.
-    println!("Result of GET req: {:?}", result);
+    println!("Result of GET req: {:?}", result.data.len());
 
     // Return the result of the API request.
     Ok(result)
