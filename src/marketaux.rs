@@ -10,12 +10,14 @@
 //! 
 
 use std::fmt;
+use std::hash::{Hash, Hasher};
 
 use reqwest::{Client, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, from_str, to_string};
 
 use crate::config::ValueConfig;
+use crate::utils::time_rfc3339_opts;
 
 /// Define an abstract error enum.
 #[derive(Debug)]
@@ -114,7 +116,7 @@ impl fmt::Display for ApiError {
 // Implement std::error::Error for ApiError.
 impl std::error::Error for ApiError {}
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 /// Represents the response from the Marketaux API.
 ///
 /// This struct contains metadata about the response and the actual data (news items).
@@ -123,6 +125,17 @@ impl std::error::Error for ApiError {}
 pub struct MarketAuxResponse {
     pub meta: Meta,
     pub data: Vec<NewsItem>,
+}
+
+impl Hash for MarketAuxResponse {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.data.hash(state);
+    }
+}
+impl PartialEq for MarketAuxResponse {
+    fn eq(&self, other: &Self) -> bool {
+        self.meta == other.meta && self.data == other.data // Ensure both fields are comparable
+    }
 }
 impl MarketAuxResponse {
     /// Constructs a `MarketAuxResponse` from a JSON string.
@@ -162,7 +175,7 @@ impl MarketAuxResponse {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Meta {
     pub found: i64,
     pub returned: i64,
@@ -170,7 +183,16 @@ pub struct Meta {
     pub page: i64,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+impl PartialEq for Meta {
+    fn eq(&self, other: &Self) -> bool {
+        self.found == other.found &&
+        self.returned == other.returned &&
+        self.limit == other.limit &&
+        self.page == other.page
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NewsItem {
     pub uuid: Option<String>,
     pub title: Option<String>,
@@ -188,7 +210,20 @@ pub struct NewsItem {
     pub similar: Vec<Value>, // Assuming similar items can vary in structure
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+impl Hash for NewsItem {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.uuid.hash(state);
+    }
+}
+
+impl PartialEq for NewsItem {
+    fn eq(&self, other: &Self) -> bool {
+        self.uuid == other.uuid &&
+        self.title == other.title
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Entity {
     pub symbol: Option<String>,
     pub name: Option<String>,
@@ -202,7 +237,7 @@ pub struct Entity {
     pub highlights: Vec<Highlight>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Highlight {
     pub highlight: Option<String>,
     pub sentiment: Option<f64>,
@@ -767,7 +802,7 @@ impl RequestManager {
 /// }
 /// ```
 ///
-pub async fn example(value_config: &ValueConfig) -> Result<MarketAuxResponse, ApiError> {
+pub async fn run(value_config: &ValueConfig) -> Result<MarketAuxResponse, ApiError> {
 
     // Load the API configuration, including the API key and base URL.
     let config = RequestConfig::new(value_config);
@@ -794,7 +829,7 @@ pub async fn example(value_config: &ValueConfig) -> Result<MarketAuxResponse, Ap
         None, // exclude_source_ids, 
         None, // language, 
         None, // published_before, 
-        None, // published_after, 
+        Some(&time_rfc3339_opts(value_config.request.delay_secs).as_str()), // published_after, 
         None, // published_on, 
         None, // sort, 
         None, // sort_order, 
@@ -820,3 +855,4 @@ pub async fn example(value_config: &ValueConfig) -> Result<MarketAuxResponse, Ap
     // Return the result of the API request.
     Ok(result)
 }
+

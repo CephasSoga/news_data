@@ -1,3 +1,6 @@
+use std::fmt;
+use std::hash::Hash;
+
 use serde::Deserialize;
 use config::{builder::DefaultState, ConfigBuilder, ConfigError, File};
 
@@ -14,7 +17,7 @@ pub struct ServerConfig {
     pub port: u16,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Hash, Debug, Deserialize)]
 pub struct LoggingConfig {
     pub level: String,
 }
@@ -25,12 +28,18 @@ pub struct ApiConfig {
     pub marketaux: String
 }
 
+#[derive(Debug, Clone, Hash, Deserialize)]
+pub struct RequestArgs {
+    pub delay_secs: i64
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ValueConfig {
     pub database: DatabaseConfig,
     pub server: ServerConfig,
     pub logging: LoggingConfig,
     pub api: ApiConfig,
+    pub request: RequestArgs,
 }
 impl ValueConfig {
     pub fn new() -> Result<Self, ConfigError> {
@@ -51,5 +60,14 @@ impl ValueConfig {
     // return it
     config.try_deserialize()
 
+    }
+}
+
+impl fmt::Display for ValueConfig {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        // Format the fields of ValueConfig as needed
+        write!(f, "MarketAux API Key: {}*****, AlphavantageAPI: {}*****", 
+               self.api.marketaux.get(..4).unwrap_or(""), // Safely get the first 4 characters
+               self.api.alphavantage.get(..4).unwrap_or("")) // Replace with actual fields
     }
 }

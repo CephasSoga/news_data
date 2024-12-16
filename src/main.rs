@@ -1,80 +1,76 @@
-
-use mongodb::bson::doc;
-
-
 #[allow(dead_code)]
+
+use std::fmt;
+
+use cached::TimedCache;
+use cached::proc_macro::cached;
+use tokio::time::{sleep, Duration};
+
+use alphavantage::AlphaVantageApiResponse;
+use marketaux::MarketAuxResponse;
 
 pub mod marketaux;
 pub mod alphavantage;
 pub mod db;
 pub mod config;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<db::OpError>> {
-    // read config file
-    println!("\nReading configurations...");
-    let value_config  = config::ValueConfig::new().expect("failed to read config file.");
-
-    // create db_client
-    println!("\nIntializing client...");
-    let client_wrapper = db::ClientManager::new(&value_config).await
-        .map_err(|e| {
-            println!("An error occured with client creation");
-            e
-        })?;
-    let client = client_wrapper.get_client();
-
-    let ops = db::DatabaseOps::new(client, "hello", "world");
-
-    let docs = vec![
-        doc! {"name": "alice", "age": 24},
-        doc! {"name": "john", "age": 22}
-
-    ];
-
-    println!("\nInserting docs...");
-    match ops.insert_many(docs)
-    .await {
-        Ok(_) => println!("Documents inserted successfully."),
-        Err(e) => eprintln!("Error inserting documents: {}", e),
-    }
-
-    println!("Done!");
+pub mod utils;
 
 
-    // Marketaux
-    println!("\nSending GET reauest to Marketaux...");
-    let _ = marketaux::example(&value_config).await;
-    println!("Done!");
-
-    // Alphavantage
-    println!("\nSending GET reauest to Alpha Vantage...");
-    let _ = alphavantage::example(&value_config).await;
-    println!("Done!");
-
-    Ok(())
+// Custom Error Type
+#[derive(Debug, Clone)]
+pub struct FetchNewsError {
+    pub message: String,
 }
 
+impl std::error::Error for FetchNewsError {}
+
+impl fmt::Display for FetchNewsError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+// Your NewsResult struct
+#[derive(Clone, Debug, PartialEq)]
+pub struct NewsResult {
+    marketaux: MarketAuxResponse,
+    alphavantage: AlphaVantageApiResponse,
+}
+
+#[cached(
+    type = "TimedCache<String, Result<NewsResult, FetchNewsError>>",
+    create = "{ TimedCache::with_lifespan(600) }", // Cache lifespan of 10 minutes
+    convert = r#"{ format!("{:?}", config) }"#
+)]
+async fn fetch_news_data(config: &config::ValueConfig) -> Result<NewsResult, FetchNewsError> {
+
+    let marketaux_data = marketaux::run(config)
+        .await
+        .map_err(|e| FetchNewsError { message: format!("MarketAux error: {}", e) })?;
+    
+    let alphavantage_data = alphavantage::run(config)
+        .await
+        .map_err(|e| FetchNewsError { message: format!("AlphaVantage error: {}", e) })?;
+
+    Ok(NewsResult {
+        marketaux: marketaux_data,
+        alphavantage: alphavantage_data,
+    })
+}
 
 #[tokio::main]
-async fn _main() -> Result<(), Box<dyn std::error::Error>> {
-    // Load the configuration
-    let config = config::ValueConfig::new().expect("Failed to load configuration");
+async fn main() -> Result<(), FetchNewsError> {
+    println!("Reading config file...");
+    let value_config = config::ValueConfig::new().expect("Failed to read config file");
 
-    // Use the configuration values
-    let api_alphavanatge = &config.api.alphavantage;
-    let api_marketaux = &config.api.marketaux;
-    let server_host = &config.server.host;
-    let server_port = config.server.port;
-    let logging_level = &config.logging.level;
+    println!("Fetching data....");
+    loop {
+        match fetch_news_data(&value_config).await {
+            Ok(data) => println!("Fetched news data: {:?}", data),
+            Err(e) => eprintln!("Error fetching news data: {}", e),
+        }
 
-    println!("API Alphavanatge: {}", api_alphavanatge);
-    println!("API Marketaux: {}", api_marketaux);
-    println!("Server Host: {}", server_host);
-    println!("Server Port: {}", server_port);
-    println!("Logging Level: {}", logging_level);
-
-    // Your MongoDB client setup and other logic here...
-
-    Ok(())
+        // Sleep to throttle requests
+        sleep(Duration::from_secs(value_config.request.delay_secs as u64)).await;
+    }
 }

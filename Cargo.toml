@@ -15,3 +15,5 @@ thirtyfour = "0.35.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"                                      # For JSON handling if needed
 dotenv = "0.15"                                         # Load environment variables from .env file
+cached = "0.27.0"                                       # For caching
+chrono = "0.4"

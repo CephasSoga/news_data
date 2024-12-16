@@ -15,12 +15,14 @@
 
 use std::fmt;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, from_str, to_string};
 use reqwest::{Client, Response, StatusCode};
 
 use crate::config::ValueConfig;
+use crate::utils::time_yyyy_mmdd_thhmm;
 
 
 
@@ -121,15 +123,15 @@ impl fmt::Display for ApiError {
 // Implement std::error::Error for ApiError
 impl std::error::Error for ApiError {}
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 
 /// Wrapper of the Alpha Vantage API response.
 /// 
 /// [See example here](https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers=AAPL&apikey=demo).
 pub struct AlphaVantageApiResponse {
-    pub items: String,
-    pub sentiment_score_definition: String,
-    pub relevance_score_definition: String,
+    pub items: Option<String>,
+    pub sentiment_score_definition: Option<String>,
+    pub relevance_score_definition: Option<String>,
     pub feed: Vec<FeedItem>,
 }
 impl AlphaVantageApiResponse {
@@ -169,9 +171,23 @@ impl AlphaVantageApiResponse {
         Self::from_json(&json)
     }
 }
+impl Hash for AlphaVantageApiResponse {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // Hash the relevant fields of MarketAuxResponse
+        // Example: state.write(self.some_field.hash());
+        self.feed.hash(state)
+    }
+}
 
+impl PartialEq for AlphaVantageApiResponse {
+    fn eq(&self, other: &Self) -> bool {
+        // Compare relevant fields of AlphaVantageApiResponse
+        // Example:
+        self.items == other.items && self.feed == other.feed
+    }
+}
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FeedItem {
     pub title: Option<String>,
     pub url: Option<String>,
@@ -187,14 +203,28 @@ pub struct FeedItem {
     pub overall_sentiment_label: Option<String>,
     pub ticker_sentiment: Vec<TickerSentiment>,
 }
+impl Hash for FeedItem{
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.title.hash(state);
+        self.url.hash(state);
+    }
+}
+impl PartialEq for FeedItem {
+    fn eq(&self, other: &Self) -> bool {
+        self.title == other.title &&
+        self.url == other.url &&
+        self.time_published == other.time_published &&
+        self.authors == other.authors
+    }
+}
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Topic {
     pub topic: Option<String>,
     pub relevance_score: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TickerSentiment {
     pub ticker: Option<String>,
     pub relevance_score: Option<String>,
@@ -504,7 +534,7 @@ impl RequestManager {
             ).await;
             return Err(error);
         }
-
+        
         // # Attempt to parse the JSON response.
         // ** The following lines can have performance implications, especially if the response body is large. 
         // ** This is because it reads the entire response body into memory as a String, which can be inefficient for large payloads.
@@ -628,7 +658,7 @@ impl RequestManager {
 ///     Err(e) => eprintln!("Error occurred: {}", e),
 /// }
 /// ```
-pub async fn example(value_config: &ValueConfig) -> Result<AlphaVantageApiResponse, ApiError> {
+pub async fn run(value_config: &ValueConfig) -> Result<AlphaVantageApiResponse, ApiError> {
     // Create configuration.
     let config = RequestConfig::new(value_config);
     // Path parameters
@@ -639,7 +669,7 @@ pub async fn example(value_config: &ValueConfig) -> Result<AlphaVantageApiRespon
         "NEWS_SENTIMENT",   // You should not use anything else
         None, // Tickers
         None, // Topics 
-        None, // Time_from 
+        Some(&time_yyyy_mmdd_thhmm(value_config.request.delay_secs).as_str()), // Time_from 
         None, // Time_to
         None, // Sort
         None  // Limit
