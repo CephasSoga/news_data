@@ -6,6 +6,7 @@ use mongodb::{
     options::{ClientOptions, UpdateOptions, ServerApi, ServerApiVersion},
     Client, Collection,
 };
+use serde_json::Value;
 
 use crate::config::ValueConfig;
 
@@ -29,6 +30,9 @@ pub enum OpError {
     SearchError {
         message: String,
     },
+    ConversionError {
+        message: String,
+    }
 }
 
 impl fmt::Display for OpError {
@@ -52,6 +56,9 @@ impl fmt::Display for OpError {
             OpError::SearchError { message } => {
                 write!(f, "Invalid search arguments | Error: {}", message)
             },
+            OpError::ConversionError { message } => {
+                write!(f, "Value conversion to bson::Document failed | Error: {}", message)
+            }
         }
     }
 }
@@ -123,6 +130,16 @@ impl DatabaseOps {
         Self { collection }
     }
 
+    /// Inserts a single document into the collection
+    pub async fn insert_one(&self, doc: Document) -> Result<(), OpError> {
+        match self.collection.insert_one(doc, None).await {
+            Ok(_) => Ok(()),
+            Err(e) => Err(OpError::InsertionError {
+                message: format!("Failed to insert documents: {}", e),
+            }),
+        }
+    }
+
     /// Inserts multiple documents into the collection
     pub async fn insert_many(&self, docs: Vec<Document>) -> Result<(), OpError> {
         match self.collection.insert_many(docs, None).await {
@@ -171,5 +188,11 @@ impl DatabaseOps {
                 message: format!("Failed to search documents: {}", e),
             }),
         }
+    }
+
+    pub fn convert_to_document(&self, value: Value) -> Result<Document, OpError> {
+        mongodb::bson::to_document(&value).map_err(|e|{
+            OpError::ConversionError { message: e.to_string() }
+        })
     }
 }

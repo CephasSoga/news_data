@@ -686,8 +686,6 @@ pub async fn run(value_config: &ValueConfig) -> Result<AlphaVantageApiResponse, 
             e // Re-propagate the error without changes
         })?;
 
-    println!("Result of GET request: {:?}", result.feed.len());
-
     // Return that result
     Ok(result)
 }

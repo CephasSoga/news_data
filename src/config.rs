@@ -9,6 +9,8 @@ use config::{builder::DefaultState, ConfigBuilder, ConfigError, File};
 pub struct DatabaseConfig {
     pub uri: String,
     pub name: String,
+    pub database_name: String,
+    pub collection_name: String,
 }
 
 #[derive(Debug, Deserialize)]
