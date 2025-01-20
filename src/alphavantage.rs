@@ -20,6 +20,7 @@ use std::hash::{Hash, Hasher};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, from_str, to_string};
 use reqwest::{Client, Response, StatusCode};
+use tracing::{info, error};
 
 use crate::config::ValueConfig;
 use crate::utils::time_yyyy_mmdd_thhmm;
@@ -548,7 +549,7 @@ impl RequestManager {
 
         // Attempt to parse the JSON response directly
         let response_json: AlphaVantageApiResponse = response.json().await.map_err(|e| {
-            eprintln!("Failed to read body: {:?}", e);
+            error!("Failed to read body: {:?}", e);
             ApiError::JsonParseError { message: e.to_string() }
         })?; // Handle JSON parsing error
 
@@ -654,8 +655,8 @@ impl RequestManager {
 /// ```
 /// let result = example().await;
 /// match result {
-///     Ok(response) => println!("Received response: {:?}", response),
-///     Err(e) => eprintln!("Error occurred: {}", e),
+///     Ok(response) => info!("Received response: {:?}", response),
+///     Err(e) => error!("Error occurred: {}", e),
 /// }
 /// ```
 pub async fn run(value_config: &ValueConfig) -> Result<AlphaVantageApiResponse, ApiError> {
@@ -682,7 +683,7 @@ pub async fn run(value_config: &ValueConfig) -> Result<AlphaVantageApiResponse, 
     // Make the GET request here.
     let result = req_manager.get(path, query).await
         .map_err(|e| {
-            eprintln!("Error during GET request: {}", e); // Log the error
+            error!("Error during GET request: {}", e); // Log the error
             e // Re-propagate the error without changes
         })?;
 

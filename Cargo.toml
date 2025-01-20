@@ -18,3 +18,5 @@ dotenv = "0.15"                                         # Load environment varia
 cached = "0.27.0"                                       # For caching
 chrono = "0.4"                                          # For Time strings
 rand = "0.3"                                            # For random generations
+tracing = "0.1.41"                                      # For tracing logs
+tracing-subscriber = "*"

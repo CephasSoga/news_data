@@ -1,0 +1,21 @@
+   [database]
+   uri = "your mongodb uri"
+   name = "Market News"
+   database_name = "your database_name"
+   collection_name = "your collection_name"
+
+   [api]
+   alphavantage = "your alphavantage apikey"
+   marketaux = "your marketaux apikey"
+
+   [server]
+   host = "localhost"
+   port = 8080
+
+   [logging]
+   level = "info"
+
+   [request]
+   delay_secs = 3600
+   hash_length = 8
+

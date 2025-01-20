@@ -1,7 +1,8 @@
 //! This module handles fetching news data from MarketAux and AlphaVantage APIs,
 //! caching the results, and inserting them into a MongoDB database.
 
-#[allow(dead_code)]
+#![allow(dead_code)]
+#![allow(unused_imports)]
 
 
 use std::fmt;
@@ -11,17 +12,20 @@ use cached::proc_macro::cached;
 use serde::{Serialize, Deserialize};
 use serde_json::Value;
 use tokio::time::{sleep, Duration};
+use tracing::{trace, info, error, warn, debug};
 
 use alphavantage::AlphaVantageApiResponse;
 use marketaux::MarketAuxResponse;
 
 use crate::utils::{time_rfc3339_opts, now, generate_random_key};
+use crate::logging::setup_logger;
 
 pub mod marketaux;
 pub mod alphavantage;
 pub mod db;
 pub mod config;
 pub mod utils;
+pub mod logging;
 
 
 /// Custom error type for fetching news data.
@@ -96,45 +100,48 @@ async fn fetch_news_data(config: &config::ValueConfig) -> Result<NewsResult, Fet
 /// fetches news data in a loop, and inserts it into the database.
 #[tokio::main]
 async fn main() -> Result<(), FetchNewsError> {
-    println!("Reading config file...");
+    // Initialize tracing
+    setup_logger("info");
+
+    info!("Reading config file...");
     let value_config = config::ValueConfig::new().expect("Failed to read config file");
 
-    println!("Creating databse client...");
+    info!("Creating databse client...");
     let db_client = db::ClientManager::new(&value_config).await.map_err(
         |e| {e}
     ).unwrap();
 
-    println!("Getting ready...");
+    info!("Getting ready...");
     let db_ops = db::DatabaseOps::new(
         db_client.get_client(), 
         &value_config.database.database_name, 
         &value_config.database.collection_name);
 
-    println!("Fetching data....");
+    info!("Fetching data....");
     loop {
         match fetch_news_data(&value_config).await {
             Ok(data) => {
-                println!(
-                "GET request yielded: {} results\n
-                Hash key: {} \n",
+                trace!(
+                "GET request yielded: {} results | Hash key: {} \n",
                 data.marketaux_data_len + data.alphavantage_data_len,
                 data.hash_key );
 
-                println!("Inserting into database...");
+                info!("Inserting into database...");
                 let doc = db_ops.convert_to_document(data.to_json())
-                    .map_err(|e| println!("Error converting NewsResult to bson::Document: {}", e))
+                    .map_err(|e| error!("Error converting NewsResult to bson::Document: {}", e))
                     .unwrap();
 
                 let _ = db_ops.insert_one(doc).await
-                    .map_err(|e| println!("Error inserting document: {}", e))
+                    .map_err(|e| error!("Error inserting document: {}", e))
                     .unwrap();
 
-                println!("Done.");
+                info!("Done.");
             },
-            Err(e) => eprintln!("Error fetching news data: {}", e),
+            Err(e) => error!("Error fetching news data: {}", e),
         }
 
         // Sleep to throttle requests
+        info!("Next fetch in {} seconds", value_config.request.delay_secs);
         sleep(Duration::from_secs(value_config.request.delay_secs as u64)).await;
     }
 }

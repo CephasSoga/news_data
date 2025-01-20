@@ -15,6 +15,7 @@ use std::hash::{Hash, Hasher};
 use reqwest::{Client, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, from_str, to_string};
+use tracing::{info, error};
 
 use crate::config::ValueConfig;
 use crate::utils::time_rfc3339_opts;
@@ -696,7 +697,7 @@ impl RequestManager {
 
         // Attempt to parse the JSON response directly
         let response_json: MarketAuxResponse = response.json().await.map_err(|e| {
-            eprintln!("Failed to read body: {:?}", e);
+            error!("Failed to read body: {:?}", e);
             ApiError::JsonParseError { message: e.to_string() }
         })?; // Handle JSON parsing error
 
@@ -797,8 +798,8 @@ impl RequestManager {
 /// ```rust
 /// let result = example().await;
 /// match result {
-///     Ok(response) => println!("Fetched news: {:?}", response),
-///     Err(e) => eprintln!("Error fetching news: {}", e),
+///     Ok(response) => info!("Fetched news: {:?}", response),
+///     Err(e) => error!("Error fetching news: {}", e),
 /// }
 /// ```
 ///
@@ -845,7 +846,7 @@ pub async fn run(value_config: &ValueConfig) -> Result<MarketAuxResponse, ApiErr
     // Send a GET request to the Marketaux API and await the result.
     let result = req_manager.get(path, Some(query)).await
         .map_err(|e|  {
-            eprintln!("Error during GET request: {}", e); // Log error
+            error!("Error during GET request: {}", e); // Log error
             e // Repropagate error
         })?;
 

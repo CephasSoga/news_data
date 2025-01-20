@@ -7,6 +7,7 @@ use mongodb::{
     Client, Collection,
 };
 use serde_json::Value;
+use tracing::info;
 
 use crate::config::ValueConfig;
 
@@ -106,7 +107,7 @@ impl ClientManager {
                 };
             })?;
 
-        println!("Pinged your deployment. You successfully connected to MongoDB cluster!");
+        info!("Pinged your deployment. You successfully connected to MongoDB cluster!");
         
         Ok(Self{client})
 }

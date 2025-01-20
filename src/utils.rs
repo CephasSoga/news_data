@@ -54,7 +54,7 @@ pub fn time_yyyy_mmdd_thhmm(secs: i64) -> String {
     // Format the time in the custom format: yyyyMMddTHHmm
     let f = tartget_time.format("%Y%m%dT%H%M").to_string();
     // Print the formatted time (for debugging purposes)
-    println!("Action att Time f: {}", f);
+    println!("Action at Time f: {}", f);
     f
 }
 
