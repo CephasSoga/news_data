@@ -5,7 +5,7 @@ use serde::Deserialize;
 use config::{builder::DefaultState, ConfigBuilder, ConfigError, File};
 
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct DatabaseConfig {
     pub uri: String,
     pub name: String,
@@ -13,7 +13,7 @@ pub struct DatabaseConfig {
     pub collection_name: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct ServerConfig {
     pub host: String,
     pub port: u16,
@@ -24,24 +24,32 @@ pub struct LoggingConfig {
     pub level: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct ApiConfig {
     pub alphavantage: String,
-    pub marketaux: String
+    pub marketaux: String,
+    pub fmp: String
 }
 
 #[derive(Debug, Clone, Hash, Deserialize)]
 pub struct RequestArgs {
     pub delay_secs: i64
 }
+#[derive(Clone, Debug, Deserialize)]
+pub struct TaskArgs {
+    pub base_delay_ms: u32,
+    pub max_delay_ms: u32,
+    pub max_retries: u32,
+}
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct ValueConfig {
     pub database: DatabaseConfig,
     pub server: ServerConfig,
     pub logging: LoggingConfig,
     pub api: ApiConfig,
     pub request: RequestArgs,
+    pub task: TaskArgs,
 }
 impl ValueConfig {
     pub fn new() -> Result<Self, ConfigError> {

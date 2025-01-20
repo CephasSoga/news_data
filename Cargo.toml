@@ -20,3 +20,5 @@ chrono = "0.4"                                          # For Time strings
 rand = "0.3"                                            # For random generations
 tracing = "0.1.41"                                      # For tracing logs
 tracing-subscriber = "*"
+futures-util = "0.3.31"
+lru = "0.12.5"

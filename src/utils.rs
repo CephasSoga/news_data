@@ -1,5 +1,16 @@
+use std::sync::Arc;
+use std::time::{Instant, Duration, SystemTime};
+
 use rand::{thread_rng, Rng};
-use chrono::{Utc, SecondsFormat, Duration as UtcDuration};
+use chrono::{Utc, SecondsFormat, DateTime, Duration as UtcDuration};
+use futures_util::Future;
+use tokio::time::sleep;
+use serde_json::Value;
+use tokio::sync::{Mutex, Semaphore};
+use tracing::{debug, error, info, warn};
+
+use crate::cache::{Cache, SharedLockedCache};
+use crate::config::ValueConfig;
 
 /// Returns the time as a string in RFC 3339 format (UTC) with an optional offset stripped.
 /// 
@@ -25,7 +36,7 @@ pub fn time_rfc3339_opts(secs: i64) -> String {
     // Format the time in RFC 3339 format with second precision
     let f = tartget_time.to_rfc3339_opts(SecondsFormat::Secs, false);
     // Print the formatted time (for debugging purposes)
-    println!("Action at Time f: {}", f);
+    info!("Action at Time f: {}", f);
     // Remove the "+00:00" suffix and return the result
     f.strip_suffix("+00:00").unwrap_or("").to_string()
 }
@@ -54,7 +65,7 @@ pub fn time_yyyy_mmdd_thhmm(secs: i64) -> String {
     // Format the time in the custom format: yyyyMMddTHHmm
     let f = tartget_time.format("%Y%m%dT%H%M").to_string();
     // Print the formatted time (for debugging purposes)
-    println!("Action at Time f: {}", f);
+    info!("Action at Time f: {}", f);
     f
 }
 
@@ -106,4 +117,62 @@ pub fn generate_random_key(length: usize) -> String {
             char::from_u32(charset[idx] as u32).unwrap_or('0')
         })
         .collect()
+}
+
+pub async fn retry<F, Fut, T, E>(
+    config: &Arc<ValueConfig>,
+    mut operation: F,
+) -> Result<T, E>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, E>>,
+{
+    let mut attempts = 0;
+
+    loop {
+        attempts += 1;
+        match operation().await {
+            Ok(value) => return Ok(value),
+            Err(_err) if attempts < config.task.max_retries => {
+                let delay = std::cmp::min(
+                    config.task.base_delay_ms * (2u32.pow(attempts - 1)),
+                    config.task.max_delay_ms,
+                );
+                sleep(Duration::from_millis(delay as u64)).await;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+
+pub async fn get_from_cache_or_fetch<F: Future<Output = Result<Value, Box<dyn std::error::Error>>>>(
+    cache: &Arc<Mutex<SharedLockedCache>>,
+    key: &str,
+    fetch_fn: F,
+    ttl: Duration,
+) ->   Result<Value, Box<dyn std::error::Error>> 
+where F: Future<Output = Result<Value, Box<dyn std::error::Error>>> {
+    info!("Looking in cache");
+    let mut cache = cache.lock().await;
+    if let Some((value, instant)) = cache.get(key).await {
+        info!("Found in cache");
+        if instant.elapsed() < Duration::from_secs(60) {
+            return Ok(value.clone());
+        } else {
+            warn!("Expired key: {}", key);
+            cache.pop(key);// Expired
+        }
+    }
+    println!("Fetching...");
+    // Fetch and cache the value
+    let result = fetch_fn.await;
+    match result {
+        Ok(value) => {
+            info!("Got value: {:?}", value);
+            cache.put(key.to_string(), (value.clone(), Instant::now()));
+            Ok(value)
+        }
+        Err(e) => Err(e),
+    }
 }

@@ -20,12 +20,17 @@ use marketaux::MarketAuxResponse;
 use crate::utils::{time_rfc3339_opts, now, generate_random_key};
 use crate::logging::setup_logger;
 
+pub mod fmp;
 pub mod marketaux;
 pub mod alphavantage;
 pub mod db;
 pub mod config;
 pub mod utils;
 pub mod logging;
+pub mod options;
+pub mod request;
+pub mod server_types;
+pub mod cache;
 
 
 /// Custom error type for fetching news data.
