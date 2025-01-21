@@ -24,7 +24,7 @@ const MAX_CLIENT_POOL_SIZE: usize = 1024;
 
 impl HTTPClient {
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        Logger::init(LogLevel::Trace);
+        //Logger::init(LogLevel::Trace);
         Ok(Self {
             client: Arc::new(Client::builder()
             .pool_max_idle_per_host(MAX_CLIENT_POOL_SIZE)

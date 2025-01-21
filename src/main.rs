@@ -6,12 +6,16 @@
 
 
 use std::fmt;
+use std::sync::Arc;
 
+use cache::SharedLockedCache;
 use cached::TimedCache;
 use cached::proc_macro::cached;
+use request::HTTPClient;
 use serde::{Serialize, Deserialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use tokio::time::{sleep, Duration};
+use tokio::sync::Mutex;
 use tracing::{trace, info, error, warn, debug};
 
 use alphavantage::AlphaVantageApiResponse;
@@ -19,6 +23,8 @@ use marketaux::MarketAuxResponse;
 
 use crate::utils::{time_rfc3339_opts, now, generate_random_key};
 use crate::logging::setup_logger;
+use crate::fmp::FMPClient;
+use crate::config::ValueConfig;
 
 pub mod fmp;
 pub mod marketaux;
@@ -104,7 +110,7 @@ async fn fetch_news_data(config: &config::ValueConfig) -> Result<NewsResult, Fet
 /// Main function that reads the config, initializes the database client, 
 /// fetches news data in a loop, and inserts it into the database.
 #[tokio::main]
-async fn main() -> Result<(), FetchNewsError> {
+async fn main_() -> Result<(), FetchNewsError> {
     // Initialize tracing
     setup_logger("info");
 
@@ -149,4 +155,33 @@ async fn main() -> Result<(), FetchNewsError> {
         info!("Next fetch in {} seconds", value_config.request.delay_secs);
         sleep(Duration::from_secs(value_config.request.delay_secs as u64)).await;
     }
+}
+
+
+#[tokio::main]
+async fn main() {
+    // Initialize tracing
+    setup_logger("trace");
+
+    // Fetch news data
+    info!("Fetching news...");
+    let args = json!({
+        "function": "stock news"
+    });
+
+    info!("Initializing cache...");
+    let cache = Arc::new(Mutex::new(SharedLockedCache::new(100 as usize)));
+
+    info!("Initializing HTTP client...");
+    let http_client = Arc::new(HTTPClient::new().expect("Failed to initialize HTTP client."));
+
+    info!("Reading configurations...");
+    let config = Arc::new(ValueConfig::new().expect("Configurations were not properly parsed."));
+
+    info!("Creating FMP client...");
+    let fmp_client = FMPClient::new(http_client, cache, config);
+
+    info!("Now fetching news data...");
+    let response = fmp_client.poll(args).await;
+    debug!("Request yielded a Response {:?}: ", response.is_ok());
 }

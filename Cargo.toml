@@ -22,3 +22,4 @@ tracing = "0.1.41"                                      # For tracing logs
 tracing-subscriber = "*"
 futures-util = "0.3.31"
 lru = "0.12.5"
+thiserror = "2.0.11"

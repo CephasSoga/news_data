@@ -1,23 +1,43 @@
+use serde::{Serialize, Deserialize};
+use serde_json::Value;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 enum FMPNewsType {
     Crypto,
     Forex,
     Stock,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
 enum TickersListFormat {
     S(String),
-    A(Vec<String>)
+    A(Vec<String>),
+}
+impl TickersListFormat {
+    pub fn from_value(value: &Value) -> Option<Self> {
+        if let Some(array) = value.as_array() {
+            let tickers: Vec<String> = array.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();            if !tickers.is_empty() {
+                return Some(TickersListFormat::A(tickers));
+            }
+        }
+        else if let Some(s) = value.as_str() {
+            return Some(TickersListFormat::S(s.to_string()));
+        }
+        None
+    }
 }
 
 type HtmlLikeString = String;
 type UrlString = String;
 type DateString = String;
 
-struct FMPArticle {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FMPArticle {
     title: Option<String>,
     date: Option<String>,
 	content: Option<HtmlLikeString>, // html-like string //<p><a href='https://financialmodelingprep.com/financial-summary/SEDG'>SolarEdge Technologies (NASDAQ:SEDG)</a> shares plunged more than 25% intra-day today following the company's preliminary Q3 financial results. Revenue for the quarter is now expected to be between $720 million and $730 million, a significant drop from the earlier projection of $880 million to $920 million,....",
-	tickers: Option<TickersListFormat>,
+	tickers: Option<String>,
 	image: Option<UrlString>,
 	link: Option<UrlString>,
 	author: Option<String>,
@@ -39,7 +59,7 @@ impl FMPArticle {
             title: value.get("title").and_then(|v| v.as_str()).map(|s| s.to_string()),
             date: value.get("date").and_then(|v| v.as_str()).map(|s| s.to_string()),
             content: value.get("content").and_then(|v| v.as_str()).map(|s| s.to_string()),
-            tickers: value.get("tickers").and_then(|v| v.as_array()).map(|a| TickersListFormat::A(a.iter().map(|v| v.as_str().unwrap().to_string()).collect())),
+            tickers: value.get("tickers").and_then(|v| v.as_str()).map(|s| s.to_string()),
             image: value.get("image").and_then(|v| v.as_str()).map(|s| s.to_string()),
             link: value.get("link").and_then(|v| v.as_str()).map(|s| s.to_string()),
             author: value.get("author").and_then(|v| v.as_str()).map(|s| s.to_string()),
@@ -62,7 +82,8 @@ impl FMPArticle {
     }
 }
 
-struct MarketSentiment {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FMPMarketSentiment {
 		date: Option<String>,
 		symbol: Option<String>,
 		stock_twits_posts: Option<u64>,
@@ -82,9 +103,9 @@ struct MarketSentiment {
 		sentiment_change: Option<f64>
 
 }
-impl MarketSentiment {
-    fn from_value(value: serde_json::Value) -> MarketSentiment {
-        MarketSentiment {
+impl FMPMarketSentiment {
+    fn from_value(value: serde_json::Value) -> FMPMarketSentiment {
+        FMPMarketSentiment {
             date: value.get("date").and_then(|v| v.as_str()).map(|s| s.to_string()),
             symbol: value.get("symbol").and_then(|v| v.as_str()).map(|s| s.to_string()),
             stock_twits_posts: value.get("stock_twits_posts").and_then(|v| v.as_u64()),

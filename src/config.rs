@@ -1,5 +1,6 @@
 use std::fmt;
 use std::hash::Hash;
+use std::time::Duration;
 
 use serde::Deserialize;
 use config::{builder::DefaultState, ConfigBuilder, ConfigError, File};
@@ -40,6 +41,7 @@ pub struct TaskArgs {
     pub base_delay_ms: u32,
     pub max_delay_ms: u32,
     pub max_retries: u32,
+    pub cache_ttl: u32,
 }
 
 #[derive(Clone, Debug, Deserialize)]
