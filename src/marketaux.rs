@@ -26,6 +26,8 @@ const BASE_URL: &str = "https://api.marketaux.com/v1/news";
 pub const ALL_NEWS_ENDPOINT: &str = "all";
 pub const SIMILAR_NEWS_ENDPOINT: &str = "similar";
 pub const NEWS_BY_UUID: &str = "uuid";
+const ENDPONT_MAP_KEY: &str = "endpoint";
+const API_TOKEN_MAP_KEY: &str = "api_token";
 
 /// Define an abstract error enum.
 #[derive(Debug)]
@@ -81,6 +83,8 @@ pub enum ApiError {
         headers: Option<reqwest::header::HeaderMap>,
         body: Option<String>,
     },
+    /// When no endpoint was provided.
+    NoEndpointProvided,
     /// Represents an unhandled error with optional `status`, `headers` and `body` details.
     UnhandledError {
         message: String,
@@ -112,6 +116,9 @@ impl fmt::Display for ApiError {
             ApiError::NetworkError { message, status, headers, body } => {
                 write!(f, "Network Error: {} | Status: {:?} | Headers: {:?} | Body: {}", 
                        message, status, headers, body.as_ref().unwrap_or(&"".to_string()))
+            }
+            ApiError::NoEndpointProvided => {
+                write!(f, "No endpoint provided")
             }
             ApiError::UnhandledError { message, status, headers, body } => {
                 write!(f, "Unhandled Error: {} | Status: {:?} | Headers: {:?} | Body: {}", 
@@ -396,11 +403,11 @@ impl TryFrom<Value> for QueryParams {
     }    
 }
 
-pub struct RequestManager {
+pub struct MarketAuxApiClient {
     client: Arc<Client>,
     config: Arc<ValueConfig>,
 }
-impl RequestManager {
+impl MarketAuxApiClient {
 
     pub fn new(client: Arc<Client>, config: Arc<ValueConfig>) -> Self {
         Self {client,  config}
@@ -532,29 +539,57 @@ impl RequestManager {
         }
     }
 
-    pub async fn poll(&self, endpoint: &str, args: Value) -> Result<MarketAuxResponse, ApiError> {
-        let mut retry_count = 0;
-        let max_retries = self.config.task.max_retries;
-        let delay_ms = self.config.task.base_delay_ms as u64;
-        let delay = Duration::from_millis(delay_ms);
-        loop {
-            match self.get(endpoint, Some(QueryParams::try_from(args.clone())?)).await {
-                Ok(response) => {
-                    info!("API GET Response was successfull? : {:?}", bool::from(!response.meta.returned==0));
-                    return Ok(response);
-                }
-                Err(error) => {
-                    if retry_count >= max_retries {
-                        error!("Failed to fetch data after {} retries.", self.config.task.max_retries);
-                        return Err(error);
+    fn insert_api_token(&self, mut value: Value) -> Value {
+        if let Value::Object(ref mut map) = value {
+            map.insert(API_TOKEN_MAP_KEY.to_string(), Value::String(self.config.api.marketaux.clone()));
+        }
+        value
+    }
+
+    fn pop_endpoint(&self, mut value: Value) -> Option<((String, Value), Value)> {
+        if let Value::Object(ref mut map) = value {
+            Some((map
+                    .remove_entry(ENDPONT_MAP_KEY)
+                    .unwrap_or((ENDPONT_MAP_KEY.to_string(), Value::String("".to_string()))), value)
+            )
+        } else {
+            None
+        }
+    }
+
+    pub async fn poll(&self, args: Value) -> Result<MarketAuxResponse, ApiError> {
+        // Insert API token into the provided args value.
+        let args = self.insert_api_token(args);
+        // Extract the endpoint from the provided args value.
+        if let Some(((_key, endpoint), args)) = self.pop_endpoint(args) {
+            let endpoint = endpoint.as_str()
+                .unwrap_or_else(|| ALL_NEWS_ENDPOINT);
+            // Perform GET request with retry mechanism.
+            let mut retry_count = 0;
+            let max_retries = self.config.task.max_retries;
+            let delay_ms = self.config.task.base_delay_ms as u64;
+            let delay = Duration::from_millis(delay_ms);
+            loop {
+                match self.get(endpoint, Some(QueryParams::try_from(args.clone())?)).await {
+                    Ok(response) => {
+                        info!("API GET Response was successful? : {:?}", bool::from(response.meta.returned > 0));
+                        return Ok(response);
                     }
-                    retry_count += 1;
-                    tokio::time::sleep(delay).await;
-                    warn!("Attempt {}/{} failed with error: {:?}. Retrying in {} seconds.", retry_count, max_retries, error, delay_ms);
-                    debug!("Retrying request due to error: {}", error);
-                    continue;
+                    Err(error) => {
+                        if retry_count >= max_retries {
+                            error!("Failed to fetch data after {} retries.", self.config.task.max_retries);
+                            return Err(error);
+                        }
+                        retry_count += 1;
+                        tokio::time::sleep(delay).await;
+                        warn!("Attempt {}/{} failed with error: {:?}. Retrying in {} seconds.", retry_count, max_retries, error, delay_ms);
+                        debug!("Retrying request due to error: {:?}", error);
+                    }
                 }
             }
+        } else {
+            error!("No endpoint found in the provided args value.");
+            Err(ApiError::NoEndpointProvided)
         }
     }
 }
@@ -588,7 +623,7 @@ pub async fn run(endpoint: &str, client: Arc<Client>, value_config: Arc<ValueCon
         None); // page
 
     // Initialize the request manager with the created client.
-    let req_manager = RequestManager::new(client, value_config);
+    let req_manager = MarketAuxApiClient::new(client, value_config);
 
     // Send a GET request to the Marketaux API and await the result.
     let result = req_manager.get(endpoint, Some(query)).await

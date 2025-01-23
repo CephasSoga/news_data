@@ -31,7 +31,7 @@ use crate::utils::time_yyyy_mmdd_thhmm;
 
 
 const BASE_URL: &str = "https://www.alphavantage.co/query";
-const BASE_FUNCTION: &str = "NEWS_SENTIMENT";
+pub const BASE_FUNCTION: &str = "NEWS_SENTIMENT";
 
 /// Define an abstract error enum.
 #[derive(Debug)]
@@ -301,11 +301,11 @@ impl TryFrom<Value> for QueryParams {
     }    
 }
 
-pub struct RequestManager {
+pub struct AlphaVantageApiClient {
     client: Arc<Client>,
     config: Arc<ValueConfig>,
 }
-impl RequestManager {
+impl AlphaVantageApiClient {
         pub fn new(client: Arc<Client>, config: Arc<ValueConfig>) -> Self {
         Self {client, config}
     }
@@ -432,7 +432,18 @@ impl RequestManager {
         }
     }
 
+    fn insert_apikey_and_function(&self, mut value: Value) -> Value {
+        if let Value::Object(ref mut map) = value {
+            map.insert("apikey".to_string(), Value::String(self.config.api.alphavantage.clone()));
+            map.insert("function".to_string(), Value::String(BASE_FUNCTION.to_string()));
+        }
+        value
+    }
+
     pub async fn poll(&self, args: Value) -> Result<AlphaVantageApiResponse, ApiError> {
+        // Insert API key & the BASE_FUNVTION into the request body.
+        let args = self.insert_apikey_and_function(args);
+        // Retry the request up to the maximum number of retries.
         let mut retry_count = 0;
         let max_retries = self.config.task.max_retries;
         let delay_ms = self.config.task.base_delay_ms as u64;
@@ -477,7 +488,7 @@ pub async fn run(client: Arc<Client>, value_config: Arc<ValueConfig>) -> Result<
     );
     
     // Request Manger
-    let req_manager = RequestManager::new(client, value_config);
+    let req_manager = AlphaVantageApiClient::new(client, value_config);
     // Make the GET request here.
     let result = req_manager.get(BASE_URL, query).await
         .map_err(|e| {

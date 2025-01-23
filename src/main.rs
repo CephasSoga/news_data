@@ -21,12 +21,14 @@ use tracing::{trace, info, error, warn, debug};
 
 use alphavantage::AlphaVantageApiResponse;
 use marketaux::MarketAuxResponse;
+use tracing_subscriber::fmt::format::json;
 
 use crate::utils::{time_rfc3339_opts, now, generate_random_key};
 use crate::logging::setup_logger;
 use crate::fmp::FMPClient;
 use crate::config::ValueConfig;
-use marketaux::{ALL_NEWS_ENDPOINT, SIMILAR_NEWS_ENDPOINT, NEWS_BY_UUID};
+use alphavantage::{AlphaVantageApiClient, BASE_FUNCTION};
+use marketaux::{MarketAuxApiClient, ALL_NEWS_ENDPOINT, SIMILAR_NEWS_ENDPOINT, NEWS_BY_UUID};
 
 pub mod fmp;
 pub mod marketaux;
@@ -119,7 +121,7 @@ async fn fetch_news_data(req_client: Arc<Client>, config: Arc<ValueConfig>) -> R
 /// Main function that reads the config, initializes the database client, 
 /// fetches news data in a loop, and inserts it into the database.
 #[tokio::main]
-async fn main() -> Result<(), FetchNewsError> {
+async fn main_2() -> Result<(), FetchNewsError> {
     // Initialize tracing
     setup_logger("trace");
 
@@ -194,4 +196,33 @@ async fn main_() {
     info!("Now fetching news data...");
     let response = fmp_client.poll(args).await;
     debug!("Request yielded a Response {:?}: ", response.is_ok());
+}
+
+#[tokio::main]
+async fn main() {
+    // Initialize tracing
+    setup_logger("debug");
+
+    info!("Reading config file & Preparing components...");
+    let value_config = Arc::new(config::ValueConfig::new().expect("Failed to read config file"));
+    let req_client = Arc::new(Client::new());
+
+    // Fetch news data
+    let marketaux_client = MarketAuxApiClient::new(req_client.clone(), value_config.clone());
+    let _alphavantage_client = AlphaVantageApiClient::new(req_client.clone(), value_config.clone());
+
+    //query_params
+    let query_params = json!({
+        "endpoint": ALL_NEWS_ENDPOINT,
+        "symbols": "DIS"
+    });
+
+    info!("Fetching data from MarketAux...");
+    let m_data = marketaux_client.poll(query_params)
+        .await
+        .inspect(|data| info!("GET request yielded: {:?}", data.meta))
+        .map_err(|err| error!("Error fetching data. | Error: {:?}", err));
+    debug!("Request yielded a Response: {:?} ", m_data.is_ok());
+
+
 }
