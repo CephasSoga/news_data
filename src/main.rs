@@ -12,6 +12,7 @@ use cache::SharedLockedCache;
 use cached::TimedCache;
 use cached::proc_macro::cached;
 use request::HTTPClient;
+use reqwest::Client;
 use serde::{Serialize, Deserialize};
 use serde_json::{json, Value};
 use tokio::time::{sleep, Duration};
@@ -25,6 +26,7 @@ use crate::utils::{time_rfc3339_opts, now, generate_random_key};
 use crate::logging::setup_logger;
 use crate::fmp::FMPClient;
 use crate::config::ValueConfig;
+use marketaux::{ALL_NEWS_ENDPOINT, SIMILAR_NEWS_ENDPOINT, NEWS_BY_UUID};
 
 pub mod fmp;
 pub mod marketaux;
@@ -85,15 +87,22 @@ impl NewsResult {
     create = "{ TimedCache::with_lifespan(600) }", // Cache lifespan of 10 minutes
     convert = r#"{ format!("{:?}", config) }"#
 )]
-async fn fetch_news_data(config: &config::ValueConfig) -> Result<NewsResult, FetchNewsError> {
+async fn fetch_news_data(req_client: Arc<Client>, config: Arc<ValueConfig>) -> Result<NewsResult, FetchNewsError> {
 
-    let marketaux_data = marketaux::run(config)
-        .await
-        .map_err(|e| FetchNewsError { message: format!("MarketAux error: {}", e) })?;
+    let marketaux_data = marketaux::run(
+            ALL_NEWS_ENDPOINT, 
+            req_client.clone(), 
+            config.clone()
+        ).await
+        .inspect(|data| info!("Successfully fetched from marketaux. | Meta :{:?}", data.meta))
+        .map_err(|e| FetchNewsError { message: format!("MarketAux error: {}", e)})?;
     
-    let alphavantage_data = alphavantage::run(config)
-        .await
-        .map_err(|e| FetchNewsError { message: format!("AlphaVantage error: {}", e) })?;
+    let alphavantage_data = alphavantage::run(
+            req_client.clone(), 
+            config.clone()
+        ).await
+        .inspect(|data| info!("Successfully fetched data from Alphavantage. | Meta: {:?}", data.items))
+        .map_err(|e| FetchNewsError { message: format!("AlphaVantage error: {}", e)})?;
 
     Ok(NewsResult {
         hash_key: generate_random_key(8),
@@ -110,12 +119,13 @@ async fn fetch_news_data(config: &config::ValueConfig) -> Result<NewsResult, Fet
 /// Main function that reads the config, initializes the database client, 
 /// fetches news data in a loop, and inserts it into the database.
 #[tokio::main]
-async fn main_() -> Result<(), FetchNewsError> {
+async fn main() -> Result<(), FetchNewsError> {
     // Initialize tracing
-    setup_logger("info");
+    setup_logger("trace");
 
-    info!("Reading config file...");
-    let value_config = config::ValueConfig::new().expect("Failed to read config file");
+    info!("Reading config file & Preparing components...");
+    let value_config = Arc::new(config::ValueConfig::new().expect("Failed to read config file"));
+    let req_client = Arc::new(Client::new());
 
     info!("Creating databse client...");
     let db_client = db::ClientManager::new(&value_config).await.map_err(
@@ -130,7 +140,7 @@ async fn main_() -> Result<(), FetchNewsError> {
 
     info!("Fetching data....");
     loop {
-        match fetch_news_data(&value_config).await {
+        match fetch_news_data(req_client.clone(), value_config.clone()).await {
             Ok(data) => {
                 trace!(
                 "GET request yielded: {} results | Hash key: {} \n",
@@ -159,7 +169,7 @@ async fn main_() -> Result<(), FetchNewsError> {
 
 
 #[tokio::main]
-async fn main() {
+async fn main_() {
     // Initialize tracing
     setup_logger("trace");
 

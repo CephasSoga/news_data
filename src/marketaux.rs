@@ -10,15 +10,22 @@
 //! 
 
 use std::fmt;
+use std::sync::Arc;
+use std::time::Duration;
 use std::hash::{Hash, Hasher};
 
 use reqwest::{Client, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, from_str, to_string};
-use tracing::{info, error};
+use tracing::{warn, debug, info, error};
 
 use crate::config::ValueConfig;
 use crate::utils::time_rfc3339_opts;
+
+const BASE_URL: &str = "https://api.marketaux.com/v1/news";
+pub const ALL_NEWS_ENDPOINT: &str = "all";
+pub const SIMILAR_NEWS_ENDPOINT: &str = "similar";
+pub const NEWS_BY_UUID: &str = "uuid";
 
 /// Define an abstract error enum.
 #[derive(Debug)]
@@ -139,37 +146,14 @@ impl PartialEq for MarketAuxResponse {
     }
 }
 impl MarketAuxResponse {
-    /// Constructs a `MarketAuxResponse` from a JSON string.
-    ///
-    /// # Arguments
-    ///
-    /// * `json` - A string slice that holds the JSON data.
-    ///
-    /// # Returns
-    ///
-    /// Returns a `Result` containing either the `MarketAuxResponse` or a `serde_json::Error`.
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
         from_str(json)
     }
 
-    /// Serializes the `MarketAuxResponse` to a JSON string.
-    ///
-    /// # Returns
-    ///
-    /// Returns a `Result` containing either the JSON string or a `serde_json::Error`.
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
         to_string(self)
     }
 
-    /// Constructs a `MarketAuxResponse` from a HashMap.
-    ///
-    /// # Arguments
-    ///
-    /// * `map` - A HashMap containing the data to be converted.
-    ///
-    /// # Returns
-    ///
-    /// Returns a `Result` containing either the `MarketAuxResponse` or a `serde_json::Error`.
     pub fn from_hashmap(map: std::collections::HashMap<String, serde_json::Value>) -> Result<Self, serde_json::Error> {
         let json = serde_json::to_string(&map)?;
         Self::from_json(&json)
@@ -245,80 +229,6 @@ pub struct Highlight {
     #[serde(rename = "highlighted_in")]
     pub highlighted_in: Option<String>,
 }
-
-
-pub struct RequestConfig {
-    apikey: String,
-    base_url: String
-}
-impl RequestConfig {
-    /// Creates a new instance of `RequestConfig`.
-    /// 
-    /// This method reads the Marketaux API key from your config.toml.
-    /// You want to make sure that file is all set and matching the stucture inside the config.rs file. 
-    ///
-    /// The method also defines the base URL for API requests, which is set to "https://api.marketaux.com/v1/news".
-    ///
-    /// ## Returns:
-    ///
-    /// Returns an instance of `RequestConfig` containing the API key and base URL.
-    pub fn new(value_config: &ValueConfig) -> Self {
-        
-        // Reads API key from values configuration file
-        let apikey = value_config.api.marketaux.clone();
-
-        // Define the base URL for API requests
-        let base_url = String::from("https://api.marketaux.com/v1/news");
-
-        Self { apikey, base_url }
-    }
-}
-
-#[derive(Serialize, Deserialize)]
-/// Refers to the HTTP request parameters for Alpha Vantage
-pub struct RequestParams {
-    pub path_params: PathParams,
-    pub query_params: QueryParams,
-}
-
-#[derive(Serialize, Deserialize)]
-/// Represents the path parameters in an API request.
-/// 
-/// ## Attribute:
-/// 
-/// - url: the String of the full url to use for the GET request.
-/// 
-pub struct PathParams {
-    /// Formats Base Url and API Endpoint in a single string object.
-    pub url: String,
-}
-impl PathParams {
-    
-    /// Creates a new instance of `PathParams`.
-    ///
-    /// This method constructs a `PathParams` object by combining the base URL from the provided
-    /// `RequestConfig` and the specified endpoint. It formats the URL to create a complete path
-    /// for API requests.
-    ///
-    /// ## Arguments:
-    ///
-    /// - `req_config`: An instance of `RequestConfig` containing the base URL for the API.
-    /// - `endpoint`: A `String` representing the specific endpoint to be appended to the base URL.
-    /// 
-    /// `Options`: **all**, **similar**, **uuid**.
-    /// 
-    /// `**Notes**`: When you pass `uuid` as endpoint argument, you should not use any other query paramaters than your api token in the GET request.
-    ///
-    /// ## Returns:
-    ///
-    /// Returns a new instance of `PathParams` with the constructed URL.
-    pub fn new(req_config: &RequestConfig, endpoint: String) -> Self {
-        Self {
-            url: format!("{}/{}", req_config.base_url, endpoint),
-        }
-    }
-}
-
 
 #[derive(Serialize, Deserialize)]
 /// Represents the HTTP request parameters for the Marketaux API.
@@ -426,7 +336,7 @@ pub struct QueryParams {
 impl QueryParams {
     /// Creates a new instance of QueryParams with required and optional parameters.
     pub fn new(
-        req_config: &RequestConfig,
+        apikey: &str,
         symbols: Option<&str>,
         entity_types: Option<&str>,
         industries: Option<&str>,
@@ -452,7 +362,7 @@ impl QueryParams {
         page: Option<i32>,
     ) -> Self {
         Self {
-            api_token: req_config.apikey.clone(),
+            api_token: apikey.to_string(),
             symbols: symbols.map(|s| s.to_string()),
             entity_types: entity_types.map(|s| s.to_string()),
             industries: industries.map(|s| s.to_string()),
@@ -478,169 +388,41 @@ impl QueryParams {
             page,
         }
     }
-
-    /// Sets the symbols filter.
-    pub fn set_symbols(&mut self, symbols: &str) {
-        self.symbols = Some(symbols.to_string());
-    }
-
-     /// Sets the entity_types filter.
-     pub fn set_entity_types(&mut self, entity_types: &str) {
-        self.entity_types = Some(entity_types.to_string());
-    }
-
-    /// Sets the industries filter.
-    pub fn set_industries(&mut self, industries: &str) {
-        self.industries = Some(industries.to_string());
-    }
-
-    /// Sets the countries filter.
-    pub fn set_countries(&mut self, countries: &str) {
-        self.countries = Some(countries.to_string());
-    }
-
-    /// Sets the sentiment_gte filter.
-    pub fn set_sentiment_gte(&mut self, sentiment: i32) {
-        self.sentiment_gte = Some(sentiment);
-    }
-
-    /// Sets the sentiment_lte filter.
-    pub fn set_sentiment_lte(&mut self, sentiment: i32) {
-        self.sentiment_lte = Some(sentiment);
-    }
-
-    /// Sets the min_match_score filter.
-    pub fn set_min_match_score(&mut self, score: f32) {
-        self.min_match_score = Some(score);
-    }
-
-    /// Sets the filter_entities flag.
-    pub fn set_filter_entities(&mut self, filter: bool) {
-        self.filter_entities = Some(filter);
-    }
-
-    /// Sets the must_have_entities flag.
-    pub fn set_must_have_entities(&mut self, must_have: bool) {
-        self.must_have_entities = Some(must_have);
-    }
-
-    /// Sets the group_similar flag.
-    pub fn set_group_similar(&mut self, group: bool) {
-        self.group_similar = Some(group);
-    }
-
-    /// Sets the search filter.
-    pub fn set_search(&mut self, search: &str) {
-        self.search = Some(search.to_string());
-    }
-
-    /// Sets the domains filter.
-    pub fn set_domains(&mut self, domains: &str) {
-        self.domains = Some(domains.to_string());
-    }
-
-    /// Sets the exclude_domains filter.
-    pub fn set_exclude_domains(&mut self, exclude: &str) {
-        self.exclude_domains = Some(exclude.to_string());
-    }
-
-    /// Sets the source_ids filter.
-    pub fn set_source_ids(&mut self, source_ids: &str) {
-        self.source_ids = Some(source_ids.to_string());
-    }
-
-    /// Sets the exclude_source_ids filter.
-    pub fn set_exclude_source_ids(&mut self, exclude: &str) {
-        self.exclude_source_ids = Some(exclude.to_string());
-    }
-
-    /// Sets the language filter.
-    pub fn set_language(&mut self, language: &str) {
-        self.language = Some(language.to_string());
-    }
-
-    /// Sets the published_before filter.
-    pub fn set_published_before(&mut self, date: &str) {
-        self.published_before = Some(date.to_string());
-    }
-
-    /// Sets the published_after filter.
-    pub fn set_published_after(&mut self, date: &str) {
-        self.published_after = Some(date.to_string());
-    }
-
-    /// Sets the published_on filter.
-    pub fn set_published_on(&mut self, date: &str) {
-        self.published_on = Some(date.to_string());
-    }
-
-    /// Sets the sort filter.
-    pub fn set_sort(&mut self, sort: &str) {
-        self.sort = Some(sort.to_string());
-    }
-
-    /// Sets the sort_order filter.
-    pub fn set_sort_order(&mut self, order: &str) {
-        self.sort_order = Some(order.to_string());
-    }
-
-    /// Sets the limit filter.
-    pub fn set_limit(&mut self, limit: i32) {
-        self.limit = Some(limit);
-    }
-
-    /// Sets the page filter.
-    pub fn set_page(&mut self, page: i32) {
-        self.page = Some(page);
-    }
+}
+impl TryFrom<Value> for QueryParams {
+    type Error = ApiError;
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        serde_json::from_value(value).map_err(|err| ApiError::JsonParseError { message: err.to_string() })
+    }    
 }
 
 pub struct RequestManager {
-    client: Client
+    client: Arc<Client>,
+    config: Arc<ValueConfig>,
 }
 impl RequestManager {
 
-    pub fn new(client: Client) -> Self {
-        Self {client}
+    pub fn new(client: Arc<Client>, config: Arc<ValueConfig>) -> Self {
+        Self {client,  config}
     }
 
-    /// Sends a GET request to the specified API endpoint with the provided path and query parameters.
-    ///
-    /// This method constructs a GET request using the `reqwest` client and handles the response.
-    /// It checks for various error conditions, including network errors, rate limit errors,
-    /// server errors, and unhandled errors. If the request is successful, it attempts to parse
-    /// the response into a `MarketAuxResponse` object.
-    ///
-    /// ## Arguments:
-    ///
-    /// - `path_params`: The path parameters containing the URL for the API endpoint.
-    /// - `query_params`: The query parameters to be included in the request.
-    ///
-    /// ## Returns:
-    ///
-    /// Returns a `Result` containing either a `MarketAuxResponse` on success or an `ApiError`
-    /// on failure.
-    ///
-    /// ## Errors:
-    ///
-    /// This method may return various `ApiError` variants, including:
-    /// - `NetworkError`: If there is a network-related issue.
-    /// - `RateLimitError`: If the rate limit for API requests has been exceeded.
-    /// - `ServerError`: If the server returns a 5xx status code.
-    /// - `UnhandledError`: For any other non-200 status codes.
-    /// - `JsonParseError`: If the response cannot be parsed into the expected format.
-    pub async fn get(
+    fn append_to_base_url(&self, endpoint: &str) -> String {
+        format!("{}/{}", BASE_URL, endpoint)
+    }
+
+    async fn get(
         &self,
-        path_params: PathParams,
+        endpoint: &str,
         query_params: Option<QueryParams>
     ) -> Result<MarketAuxResponse, ApiError> {
             // Send GET request
             let response = self
             .client
-            .get(&path_params.url)
+            .get(&self.append_to_base_url(endpoint))
             .query(&query_params)
             .send()
             .await.map_err(|e| {
+                warn!("MarketAux client encountered an error during GET request.");
                 // Check if the error is a network error
                 if e.is_timeout() || e.is_connect() {
                     ApiError::NetworkError {
@@ -704,28 +486,6 @@ impl RequestManager {
         Ok(response_json)
     }
 
-    /// Parses the response error from the Marketaux API and constructs an appropriate `ApiError`.
-    /// 
-    /// This function is called when an error occurs during an API request. It extracts the status, headers,
-    /// and body from the response and maps them to a specific `ApiError` variant based on the provided
-    /// `abstract_error_type`.
-    /// 
-    /// ## Arguments:
-    /// 
-    /// - `message`: A string containing the error message to be included in the `ApiError`.
-    /// - `response`: The `Response` object from the `reqwest` library, which contains details about the HTTP response.
-    /// - `abstract_error_type`: An enum variant of `AbstractApiError` that indicates the type of error encountered.
-    /// 
-    /// ## Returns:
-    /// 
-    /// This function returns an `ApiError` instance that corresponds to the type of error encountered,
-    /// populated with the relevant details from the response.
-    /// 
-    /// ## Panics:
-    /// 
-    /// If an unsupported error type is provided, the function will panic with a message indicating that
-    /// the error type is not supported.
-    /// 
     async fn parse_resp_error(&self, message: String, response: Response, abstract_error_type: AbstractApiError) -> ApiError {
         let status = response.status();
         let headers = response.headers().clone();
@@ -771,48 +531,38 @@ impl RequestManager {
             },
         }
     }
+
+    pub async fn poll(&self, endpoint: &str, args: Value) -> Result<MarketAuxResponse, ApiError> {
+        let mut retry_count = 0;
+        let max_retries = self.config.task.max_retries;
+        let delay_ms = self.config.task.base_delay_ms as u64;
+        let delay = Duration::from_millis(delay_ms);
+        loop {
+            match self.get(endpoint, Some(QueryParams::try_from(args.clone())?)).await {
+                Ok(response) => {
+                    info!("API GET Response was successfull? : {:?}", bool::from(!response.meta.returned==0));
+                    return Ok(response);
+                }
+                Err(error) => {
+                    if retry_count >= max_retries {
+                        error!("Failed to fetch data after {} retries.", self.config.task.max_retries);
+                        return Err(error);
+                    }
+                    retry_count += 1;
+                    tokio::time::sleep(delay).await;
+                    warn!("Attempt {}/{} failed with error: {:?}. Retrying in {} seconds.", retry_count, max_retries, error, delay_ms);
+                    debug!("Retrying request due to error: {}", error);
+                    continue;
+                }
+            }
+        }
+    }
 }
 
-
-/// Asynchronously fetches financial news articles from the Marketaux API.
-///
-/// This function serves as an example of how to use the `RequestConfig`, `PathParams`, and `QueryParams`
-/// structs to construct a request to the Marketaux API. It initializes the necessary configurations,
-/// constructs the request parameters, and sends a GET request to retrieve news articles.
-///
-/// ## Argument:
-/// 
-/// - value_config (&ValueConfig): this holds the variables extracted from the config.toml file.
-/// We use it for flexibility and we always pass it as an argument so that we can avoid reading
-/// the configuration file every single time functions are called.
-/// 
-/// ## Returns
-///
-/// Returns a `Result` containing either:
-/// - `MarketAuxResponse`: A successful response containing the fetched news articles and metadata.
-/// - `ApiError`: An error that occurred during the request process, which can include network errors,
-///   rate limit errors, server errors, or JSON parsing errors.
-///
-/// ## Example
-///
-/// ```rust
-/// let result = example().await;
-/// match result {
-///     Ok(response) => info!("Fetched news: {:?}", response),
-///     Err(e) => error!("Error fetching news: {}", e),
-/// }
-/// ```
-///
-pub async fn run(value_config: &ValueConfig) -> Result<MarketAuxResponse, ApiError> {
-
-    // Load the API configuration, including the API key and base URL.
-    let config = RequestConfig::new(value_config);
-
-    // Create path parameters for the API request, specifying the endpoint "all".
-    let path = PathParams::new(&config, "all".to_string());
-
+pub async fn run(endpoint: &str, client: Arc<Client>, value_config: Arc<ValueConfig>) -> Result<MarketAuxResponse, ApiError> {
     // Construct query parameters for the API request, currently set to None for all optional fields.
-    let query = QueryParams::new(&config, 
+    let query = QueryParams::new(
+        &value_config.api.marketaux, 
         None, // Symbols, 
         None, // entity_types, 
         None, // industries, 
@@ -837,14 +587,11 @@ pub async fn run(value_config: &ValueConfig) -> Result<MarketAuxResponse, ApiErr
         None, // limit, 
         None); // page
 
-    // Create a new HTTP client for making requests.
-    let client = Client::new();
-
     // Initialize the request manager with the created client.
-    let req_manager = RequestManager::new(client);
+    let req_manager = RequestManager::new(client, value_config);
 
     // Send a GET request to the Marketaux API and await the result.
-    let result = req_manager.get(path, Some(query)).await
+    let result = req_manager.get(endpoint, Some(query)).await
         .map_err(|e|  {
             error!("Error during GET request: {}", e); // Log error
             e // Repropagate error

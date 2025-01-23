@@ -14,34 +14,36 @@
 #[allow(unused_imports)]
 
 use std::fmt;
+use std::time::Duration;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
+use mongodb::bson::de;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, from_str, to_string};
 use reqwest::{Client, Response, StatusCode};
-use tracing::{info, error};
+use tracing::{debug, error, info, warn};
+use twitter_v2::oauth2::helpers::variant_name;
 
 use crate::config::ValueConfig;
 use crate::utils::time_yyyy_mmdd_thhmm;
 
 
+const BASE_URL: &str = "https://www.alphavantage.co/query";
+const BASE_FUNCTION: &str = "NEWS_SENTIMENT";
 
 /// Define an abstract error enum.
 #[derive(Debug)]
 pub enum AbstractApiError {
     /// Abstracts the `BAD_REQUEST` errors.
     RequestError,
-
     /// Absctracts `Rate Limit Exceeded` errors.
     RateLimitError,
-
     /// Abstracts `INTERNAL_SERVER_ERROR` errors
     ServerError,
-
     /// Abstracts `REQUEST_TIMEOUT` errors.
     NetworkError,
-
     /// Abstracts all other errors,
     UnhandledError,
 }
@@ -137,36 +139,16 @@ pub struct AlphaVantageApiResponse {
 }
 impl AlphaVantageApiResponse {
     /// Constructs a `AlphaVantageApiResponse` from a JSON string.
-    ///
-    /// # Arguments
-    ///
-    /// * `json` - A string slice that holds the JSON data.
-    ///
-    /// # Returns
-    ///
-    /// Returns a `Result` containing either the `AlphaVantageApiResponse` or a `serde_json::Error`.
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
         from_str(json)
     }
 
     /// Serializes the `AlphaVantageApiResponse` to a JSON string.
-    ///
-    /// # Returns
-    ///
-    /// Returns a `Result` containing either the JSON string or a `serde_json::Error`.
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
         to_string(self)
     }
 
     /// Constructs a `AlphaVantageApiResponse` from a HashMap.
-    ///
-    /// # Arguments
-    ///
-    /// * `map` - A HashMap containing the data to be converted.
-    ///
-    /// # Returns
-    ///
-    /// Returns a `Result` containing either the `AlphaVantageApiResponse` or a `serde_json::Error`.
     pub fn from_hashmap(map: HashMap<String, Value>) -> Result<Self, serde_json::Error> {
         let json = serde_json::to_string(&map)?;
         Self::from_json(&json)
@@ -233,73 +215,8 @@ pub struct TickerSentiment {
     pub ticker_sentiment_label: Option<String>,
 }
 
-/// Refers to the requests configuration. This sruct centralizes theconfiguration control.
-/// 
-/// ## Why This Works:
-///
-/// - Centralized API Key Management:
-///
-/// RequestConfig handles the API key, ensuring it is defined and retrieved consistently across the application.
-/// 
-/// - Ease of Use:
-///
-/// Callers only need to provide the RequestConfig instance, reducing the risk of forgetting to include the API key manually.
-/// Improved Maintainability:
-///
-/// If the way the API key is retrieved changes (e.g., from an environment variable to a configuration file), only the RequestConfig implementation needs updating.
-/// 
-pub struct  RequestConfig{
-    apikey: String,
-    base_url: String,
-}
-impl RequestConfig {
-    /// Creates a new instance of `RequestConfig`.
-    /// 
-    /// Reads API key form Config.toml, somake sure you have that set and matching the format inside `./config.toml` .
-    pub fn new(value_config: &ValueConfig) -> Self {
-        let apikey = value_config.api.alphavantage.clone();
-
-        // Define the base URL for API requests
-        let base_url = String::from("https://www.alphavantage.co/query");
-
-        Self { apikey, base_url }
-    }
-}
 
 #[derive(Serialize, Deserialize)]
-/// Refers to the HTTP request parameters for Alpha Vantage.
-pub struct RequestParams {
-    pub path_params: PathParams,
-    pub query_params: QueryParams,
-}
-
-#[derive(Serialize, Deserialize)]
-/// Represents the path parameters in an API request.
-///
-/// This struct is used to encapsulate the endpoint URL for API requests,
-/// allowing for easier management and modification of the endpoint as needed.
-pub struct PathParams {
-    pub endpoint: String,
-}
-impl PathParams {
-    /// Creates a new instance of `PathParams`.
-    ///
-    /// # Arguments
-    ///
-    /// * `req_config` - A `RequestConfig` instance that contains the base URL for the API.
-    ///
-    /// # Returns
-    ///
-    /// Returns a `PathParams` instance initialized with the endpoint derived from the provided `RequestConfig`.
-    pub fn new(req_config: &RequestConfig) -> Self {
-        Self {
-            endpoint: req_config.base_url.clone(),
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize)]
-/// Represents the query parameters in an API request
 pub struct QueryParams {
     /// The function of your choice. In this case, function=NEWS_SENTIMENT
     pub function: String,
@@ -355,24 +272,8 @@ pub struct QueryParams {
 }
 
 impl QueryParams {
-    /// Creates a new instance of `QueryParams` with required and optional parameters.
-    ///
-    /// # Parameters
-    /// 
-    /// - `req_config`: A reference to the `RequestConfig` instance containing the API key.
-    /// - `function`: The function to be called (e.g., "NEWS_SENTIMENT").
-    /// - `tickers`: Optional comma-separated stock/crypto/forex symbols to filter articles.
-    /// - `topics`: Optional comma-separated topics to filter articles.
-    /// - `time_from`: Optional start time for filtering articles in `YYYYMMDDTHHMM` format.
-    /// - `time_to`: Optional end time for filtering articles in `YYYYMMDDTHHMM` format.
-    /// - `sort`: Optional sort order ("LATEST", "EARLIEST", or "RELEVANCE").
-    /// - `limit`: Optional maximum number of results to return (default is 50).
-    ///
-    /// # Returns
-    ///
-    /// Returns a `QueryParams` instance populated with the provided parameters.
     pub fn new(
-        req_config: &RequestConfig,
+        apikey: &str,
         function: &str,
         tickers: Option<&str>,
         topics: Option<&str>,
@@ -389,110 +290,38 @@ impl QueryParams {
             time_to: time_to.map(|t| t.to_string()),
             sort: sort.map(|s| s.to_string()),
             limit: limit,
-            apikey: req_config.apikey.clone()                   
+            apikey: apikey.to_string(),                   
         }                                                       
     }
-
-    /// Sets the tickers filter
-    pub fn set_tickers(&mut self, tickers: &str) {
-        self.tickers = Some(tickers.to_string());
-    }
-
-    /// Sets the topics filter
-    pub fn set_topics(&mut self, topics: &str) {
-        self.topics = Some(topics.to_string());
-    }
-
-    /// Sets the time_from parameter
-    pub fn set_time_from(&mut self, time_from: &str) {
-        self.time_from = Some(time_from.to_string());
-    }
-
-    /// Sets the time_to parameter
-    pub fn set_time_to(&mut self, time_to: &str) {
-        self.time_to = Some(time_to.to_string());
-    }
-
-    /// Sets the sort order
-    pub fn set_sort(&mut self, sort: &str) {
-        self.sort = Some(sort.to_string());
-    }
-
-    /// Sets the limit for the number of results
-    pub fn set_limit(&mut self, limit: i32) {
-        self.limit = Some(limit);
-    }
+}
+impl TryFrom<Value> for QueryParams {
+    type Error = ApiError;
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        serde_json::from_value(value).map_err(|err| ApiError::JsonParseError { message: err.to_string() })
+    }    
 }
 
 pub struct RequestManager {
-    client: Client
+    client: Arc<Client>,
+    config: Arc<ValueConfig>,
 }
 impl RequestManager {
-    
-    /// Creates a new instance of `RequestManager`.
-    /// 
-    /// # Arguments
-    /// 
-    /// * `client` - An instance of `reqwest::Client` used to send HTTP requests.
-    /// 
-    /// # Returns
-    /// 
-    /// Returns a `RequestManager` instance initialized with the provided client.
-    pub fn new(client: Client) -> Self {
-        Self {client}
+        pub fn new(client: Arc<Client>, config: Arc<ValueConfig>) -> Self {
+        Self {client, config}
     }
-
-    /// Sends a GET request to the Alpha Vantage API with the provided path and query parameters.
-    /// 
-    /// This function constructs the full URL by combining the base URL with the provided path parameters.
-    /// It then sends a GET request to this URL with the provided query parameters. The response is
-    /// parsed into an `AlphaVantageApiResponse` instance, which is then returned.
-    /// 
-    /// ## Arguments:
-    /// 
-    /// - `path_params`: The path parameters for the API request.
-    /// - `query_params`: The query parameters for the API request.
-    /// 
-    /// ## Returns:
-    /// 
-    /// The response from the Alpha Vantage API, parsed into an `AlphaVantageApiResponse` instance.
-    /// 
-    /// ## Errors:
-    /// 
-    /// This function can return the following errors:
-    /// 
-    /// - `ApiError::NetworkError`: If there is a network error while sending the request.
-    /// - `ApiError::RequestError`: If there is a general request error.
-    /// - `ApiError::RateLimitError`: If the rate limit has been exceeded.
-    /// - `ApiError::ServerError`: If there is a server error.
-    /// - `ApiError::JsonParseError`: If there is an error parsing the JSON response.
-    /// 
-    /// # Example
-    /// 
-    /// ```
-    /// let config = RequestConfig::new();
-    /// let request_manager = RequestManager::new(config);
-    /// let path_params = PathParams::new(config);
-    /// let query_params = QueryParams::new(config);
-    /// let response = request_manager.get(path_params, query_params).await;
-    /// ```
-    ///
     pub async fn get(
         &self, 
-        path_params: PathParams, 
+        url: &str, 
         query_params: QueryParams
     ) -> Result<AlphaVantageApiResponse, ApiError> {
-        
-        // Construct URL
-        let url = path_params.endpoint;
-
         // Send GET request
         let response = self
             .client
-            .get(&url)
+            .get(url)
             .query(&query_params)
             .send()
             .await.map_err(|e| {
+                warn!("AlphaVantage client encountered an error during GET request.");
                 // Check if the error is a network error
                 if e.is_timeout() || e.is_connect() {
                     ApiError::NetworkError {
@@ -557,27 +386,6 @@ impl RequestManager {
     }
 
     /// Parses the response error from the Alpha Vantage API and constructs an appropriate `ApiError`.
-    /// 
-    /// This function is called when an error occurs during an API request. It extracts the status, headers,
-    /// and body from the response and maps them to a specific `ApiError` variant based on the provided
-    /// `abstract_error_type`.
-    /// 
-    /// ## Arguments:
-    /// 
-    /// - `message`: A string containing the error message to be included in the `ApiError`.
-    /// - `response`: The `Response` object from the `reqwest` library, which contains details about the HTTP response.
-    /// - `abstract_error_type`: An enum variant of `AbstractApiError` that indicates the type of error encountered.
-    /// 
-    /// ## Returns:
-    /// 
-    /// This function returns an `ApiError` instance that corresponds to the type of error encountered,
-    /// populated with the relevant details from the response.
-    /// 
-    /// ## Panics:
-    /// 
-    /// If an unsupported error type is provided, the function will panic with a message indicating that
-    /// the error type is not supported.
-    /// 
     async fn parse_resp_error(&self, message: String, response: Response, abstract_error_type: AbstractApiError) -> ApiError {
         let status = response.status();
         let headers = response.headers().clone();
@@ -623,51 +431,43 @@ impl RequestManager {
             },
         }
     }
+
+    pub async fn poll(&self, args: Value) -> Result<AlphaVantageApiResponse, ApiError> {
+        let mut retry_count = 0;
+        let max_retries = self.config.task.max_retries;
+        let delay_ms = self.config.task.base_delay_ms as u64;
+        let delay = Duration::from_millis(delay_ms);
+        loop {
+            match self.get(BASE_URL, QueryParams::try_from(args.clone())?).await {
+                Ok(api_response) => {
+                    info!("API GET Response was successfull? : {:?}", bool::from(!api_response.feed.is_empty()));
+                    return Ok(api_response)
+                },
+                Err(api_error) => {
+                    if retry_count >= max_retries {
+                        error!("Failed to fetch data after {} retries.", self.config.task.max_retries);
+                        return Err(api_error);
+                    }
+                    retry_count += 1;
+                    // Wait for the retry interval before making the next request
+                    tokio::time::sleep(delay).await;
+                    warn!("Attempt {}/{} failed with error: {:?}. Retrying in {} seconds.", retry_count, max_retries, api_error, delay_ms);
+                    debug!("Retrying request due to error: {}", api_error);
+                    // Retry the request
+                    continue;
+                }
+            }
+        }
+    }
 }
 
 /// Example function to demonstrate how to use the Alpha Vantage API.
-///
-/// This function initializes the request configuration, constructs the path and query parameters,
-/// creates a new HTTP client, and sends a GET request to the Alpha Vantage API for news sentiment data.
-///
-/// ## Argument:
-/// 
-/// - value_config (&ValueConfig): this holds the variables extracted from the config.toml file.
-/// We use it for flexibility and we always pass it as an argument so that we can avoid reading
-/// the configuration file every single time functions are called.
-/// ## Returns
-///
-/// Returns a `Result` containing either:
-/// - `AlphaVantageApiResponse`: The response from the API containing news sentiment data.
-/// - `ApiError`: An error if the request fails or if there is an issue with the response.
-///
-/// ## Errors
-///
-/// This function can return various errors, including:
-/// - `ApiError::NetworkError`: If there is a network issue while sending the request.
-/// - `ApiError::RequestError`: If there is a general request error.
-/// - `ApiError::RateLimitError`: If the rate limit for API requests has been exceeded.
-/// - `ApiError::ServerError`: If there is a server error from the API.
-/// - `ApiError::JsonParseError`: If there is an error parsing the JSON response.
-///
-/// ## Example
-///
-/// ```
-/// let result = example().await;
-/// match result {
-///     Ok(response) => info!("Received response: {:?}", response),
-///     Err(e) => error!("Error occurred: {}", e),
-/// }
-/// ```
-pub async fn run(value_config: &ValueConfig) -> Result<AlphaVantageApiResponse, ApiError> {
+pub async fn run(client: Arc<Client>, value_config: Arc<ValueConfig>) -> Result<AlphaVantageApiResponse, ApiError> {
     // Create configuration.
-    let config = RequestConfig::new(value_config);
-    // Path parameters
-    let path = PathParams::new(&config);
     // Query parmaters
     let query = QueryParams::new(
-        &config, 
-        "NEWS_SENTIMENT",   // You should not use anything else
+        &value_config.api.alphavantage, 
+        BASE_FUNCTION,   // You should not use anything else
         None, // Tickers
         None, // Topics 
         Some(&time_yyyy_mmdd_thhmm(value_config.request.delay_secs).as_str()), // Time_from 
@@ -676,12 +476,10 @@ pub async fn run(value_config: &ValueConfig) -> Result<AlphaVantageApiResponse, 
         None  // Limit
     );
     
-    // Request Client
-    let client = Client::new();
     // Request Manger
-    let req_manager = RequestManager::new(client);
+    let req_manager = RequestManager::new(client, value_config);
     // Make the GET request here.
-    let result = req_manager.get(path, query).await
+    let result = req_manager.get(BASE_URL, query).await
         .map_err(|e| {
             error!("Error during GET request: {}", e); // Log the error
             e // Re-propagate the error without changes
