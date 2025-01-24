@@ -30,6 +30,7 @@ use crate::config::ValueConfig;
 use alphavantage::{AlphaVantageApiClient, BASE_FUNCTION};
 use marketaux::{MarketAuxApiClient, ALL_NEWS_ENDPOINT, SIMILAR_NEWS_ENDPOINT, NEWS_BY_UUID};
 
+pub mod errors;
 pub mod fmp;
 pub mod marketaux;
 pub mod alphavantage;
@@ -41,7 +42,8 @@ pub mod options;
 pub mod request;
 pub mod server_types;
 pub mod cache;
-
+pub mod websocket;
+pub mod request_parser;
 
 /// Custom error type for fetching news data.
 #[derive(Debug, Clone)]
@@ -91,18 +93,26 @@ impl NewsResult {
 )]
 async fn fetch_news_data(req_client: Arc<Client>, config: Arc<ValueConfig>) -> Result<NewsResult, FetchNewsError> {
 
+    let cache = Arc::new(Mutex::new(SharedLockedCache::new(100)));
+
     let marketaux_data = marketaux::run(
             ALL_NEWS_ENDPOINT, 
-            req_client.clone(), 
+            req_client.clone(),
+            cache.clone(), 
             config.clone()
         ).await
+        .map(serde_json::from_value::<MarketAuxResponse>)
+        .unwrap()
         .inspect(|data| info!("Successfully fetched from marketaux. | Meta :{:?}", data.meta))
         .map_err(|e| FetchNewsError { message: format!("MarketAux error: {}", e)})?;
     
     let alphavantage_data = alphavantage::run(
-            req_client.clone(), 
+            req_client.clone(),
+            cache.clone(),  
             config.clone()
         ).await
+        .map(serde_json::from_value::<AlphaVantageApiResponse>)
+        .unwrap()
         .inspect(|data| info!("Successfully fetched data from Alphavantage. | Meta: {:?}", data.items))
         .map_err(|e| FetchNewsError { message: format!("AlphaVantage error: {}", e)})?;
 
@@ -194,35 +204,47 @@ async fn main_() {
     let fmp_client = FMPClient::new(http_client, cache, config);
 
     info!("Now fetching news data...");
-    let response = fmp_client.poll(args).await;
+    let response = fmp_client.poll(Arc::new(args)).await;
     debug!("Request yielded a Response {:?}: ", response.is_ok());
 }
 
 #[tokio::main]
-async fn main() {
+async fn main_3() {
     // Initialize tracing
     setup_logger("debug");
 
     info!("Reading config file & Preparing components...");
     let value_config = Arc::new(config::ValueConfig::new().expect("Failed to read config file"));
     let req_client = Arc::new(Client::new());
+    let cache = Arc::new(Mutex::new(SharedLockedCache::new(100)));
 
     // Fetch news data
-    let marketaux_client = MarketAuxApiClient::new(req_client.clone(), value_config.clone());
-    let _alphavantage_client = AlphaVantageApiClient::new(req_client.clone(), value_config.clone());
+    let marketaux_client = MarketAuxApiClient::new(req_client.clone(), cache.clone(),  value_config.clone());
+    let _alphavantage_client = AlphaVantageApiClient::new(req_client.clone(), cache.clone(),  value_config.clone());
 
     //query_params
     let query_params = json!({
         "endpoint": ALL_NEWS_ENDPOINT,
-        "symbols": "DIS"
+        "symbols": "DIS",
+        "hola": "hello world"
     });
 
     info!("Fetching data from MarketAux...");
-    let m_data = marketaux_client.poll(query_params)
+    let m_data = marketaux_client.poll(Arc::new(query_params))
         .await
+        .map(serde_json::from_value::<MarketAuxResponse>)
+        .unwrap()
         .inspect(|data| info!("GET request yielded: {:?}", data.meta))
         .map_err(|err| error!("Error fetching data. | Error: {:?}", err));
     debug!("Request yielded a Response: {:?} ", m_data.is_ok());
 
 
+}
+
+#[tokio::main]
+async fn main() {
+    // Initialize tracing
+    setup_logger("debug");
+    // Run websocket server
+    let _ = websocket::run().await;
 }

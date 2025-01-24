@@ -21,110 +21,24 @@ use std::sync::Arc;
 
 use mongodb::bson::de;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, from_str, to_string};
+use serde_json::{Value, from_str, to_value};
 use reqwest::{Client, Response, StatusCode};
 use tracing::{debug, error, info, warn};
 use twitter_v2::oauth2::helpers::variant_name;
+use tokio::sync::Mutex;
 
+use crate::cache::SharedLockedCache;
 use crate::config::ValueConfig;
-use crate::utils::time_yyyy_mmdd_thhmm;
+use crate::utils::{get_resp_value_from_cache_or_fetch, time_yyyy_mmdd_thhmm};
+use crate::options::FetchType;
+use crate::errors::{AbstractApiError, ApiError};
+use crate::options::AVQueryParams as QueryParams;
 
 
 const BASE_URL: &str = "https://www.alphavantage.co/query";
 pub const BASE_FUNCTION: &str = "NEWS_SENTIMENT";
+const FETCH_TYPE_KEY_MAP: &str = "fetch_type";
 
-/// Define an abstract error enum.
-#[derive(Debug)]
-pub enum AbstractApiError {
-    /// Abstracts the `BAD_REQUEST` errors.
-    RequestError,
-    /// Absctracts `Rate Limit Exceeded` errors.
-    RateLimitError,
-    /// Abstracts `INTERNAL_SERVER_ERROR` errors
-    ServerError,
-    /// Abstracts `REQUEST_TIMEOUT` errors.
-    NetworkError,
-    /// Abstracts all other errors,
-    UnhandledError,
-}
-
-/// Enum for custom error types that extend the `AbstractApiError` Enum.
-#[derive(Debug)]
-pub enum ApiError {
-    /// Represents a request error with optional `status`, `headers` and `body` details.
-    RequestError {
-        message: String,
-        status: Option<StatusCode>,
-        headers: Option<reqwest::header::HeaderMap>,
-        body: Option<String>,
-    },
-    /// Represents a rate limit error with optional `status`, `headers` and `body` details.
-    RateLimitError {
-        message: String,
-        status: Option<StatusCode>,
-        headers: Option<reqwest::header::HeaderMap>,
-        body: Option<String>,
-    },
-    /// Represents a server error with optional `status`, `headers` and `body` details.
-    ServerError {
-        message: String,
-        status: Option<StatusCode>,
-        headers: Option<reqwest::header::HeaderMap>,
-        body: Option<String>,
-    },
-    /// Represents a JSON parsing error.
-    JsonParseError {
-        message: String,
-    },
-    /// Represents a network error with optional `status`, `headers` and `body` details.
-    NetworkError {
-        message: String,
-        status: Option<StatusCode>,
-        headers: Option<reqwest::header::HeaderMap>,
-        body: Option<String>,
-    },
-    /// Represents an unhandled error with optional `status`, `headers` and `body` details.
-    UnhandledError {
-        message: String,
-        status: Option<StatusCode>,
-        headers: Option<reqwest::header::HeaderMap>,
-        body: Option<String>,
-    },
-}
-
-// Implement Display for ApiError
-impl fmt::Display for ApiError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ApiError::RequestError { message, status, headers, body } => {
-                write!(f, "Request Error: {} | Status: {:?} | Headers: {:?} | Body: {}", 
-                       message, status, headers, body.as_ref().unwrap_or(&"".to_string()))
-            }
-            ApiError::RateLimitError { message, status, headers, body } => {
-                write!(f, "Rate Limit Error: {} | Status: {:?} | Headers: {:?} | Body: {}", 
-                       message, status, headers, body.as_ref().unwrap_or(&"".to_string()))
-            }
-            ApiError::ServerError { message, status, headers, body } => {
-                write!(f, "Server Error: {} | Status: {:?} | Headers: {:?} | Body: {}", 
-                       message, status, headers, body.as_ref().unwrap_or(&"".to_string()))
-            }
-            ApiError::JsonParseError { message} => {
-                write!(f, "JSON Parse Error: {}", message)
-            }
-            ApiError::NetworkError { message, status, headers, body } => {
-                write!(f, "Network Error: {} | Status: {:?} | Headers: {:?} | Body: {}", 
-                       message, status, headers, body.as_ref().unwrap_or(&"".to_string()))
-            }
-            ApiError::UnhandledError { message, status, headers, body } => {
-                write!(f, "Unhandled Error: {} | Status: {:?} | Headers: {:?} | Body: {}", 
-                       message, status, headers, body.as_ref().unwrap_or(&"".to_string()))
-            }
-        }
-    }
-}
-
-// Implement std::error::Error for ApiError
-impl std::error::Error for ApiError {}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 
@@ -144,8 +58,8 @@ impl AlphaVantageApiResponse {
     }
 
     /// Serializes the `AlphaVantageApiResponse` to a JSON string.
-    pub fn to_json(&self) -> Result<String, serde_json::Error> {
-        to_string(self)
+    pub fn to_json(&self) -> Result<Value, ApiError> {
+        to_value(self).map_err(|err| ApiError::JsonParseError { message: err.to_string() })
     }
 
     /// Constructs a `AlphaVantageApiResponse` from a HashMap.
@@ -215,105 +129,48 @@ pub struct TickerSentiment {
     pub ticker_sentiment_label: Option<String>,
 }
 
-
-#[derive(Serialize, Deserialize)]
-pub struct QueryParams {
-    /// The function of your choice. In this case, function=NEWS_SENTIMENT
-    pub function: String,
-
-    /// Comma-separated stock/crypto/forex symbols to filter articles (e.g., "IBM").
-    /// 
-    /// For example: `tickers=IBM` will filter for articles that mention the IBM ticker; 
-    /// `tickers=COIN,CRYPTO:BTC,FOREX:USD` will filter for articles that simultaneously mention Coinbase (COIN), 
-    /// Bitcoin (CRYPTO:BTC), and US Dollar (FOREX:USD) in their content.
-    pub tickers: Option<String>,
-
-    /// Comma-separated topics to filter articles (e.g., "technology").
-    ///
-    /// ## Available topics:
-    ///
-    /// - Blockchain: `blockchain`
-    /// - Earnings: `earnings`
-    /// - IPO: `ipo`
-    /// - Mergers & Acquisitions: `mergers_and_acquisitions`
-    /// - Financial Markets: `financial_markets`
-    /// - Economy - Fiscal Policy (e.g., tax reform, government spending): `economy_fiscal`
-    /// - Economy - Monetary Policy (e.g., interest rates, inflation): `economy_monetary`
-    /// - Economy - Macro/Overall: `economy_macro`
-    /// - Energy & Transportation: `energy_transportation`
-    /// - Finance: `finance`
-    /// - Life Sciences: `life_sciences`
-    /// - Manufacturing: `manufacturing`
-    /// - Real Estate & Construction: `real_estate`
-    /// - Retail & Wholesale: `retail_wholesale`
-    /// - Technology: `technology`
-    pub topics: Option<String>,
-
-    /// Start time for filtering articles in YYYYMMDDTHHMM format.
-    /// 
-    /// For example: time_from=20220410T0130.
-    pub time_from: Option<String>,
-
-    /// End time for filtering articles in YYYYMMDDTHHMM format.
-    /// 
-    /// If time_from is specified but time_to is missing, 
-    /// the API will return articles published between the time_from value and the current time
-    pub time_to: Option<String>,
-
-    /// Sort order: "LATEST", "EARLIEST", or "RELEVANCE".
-    pub sort: Option<String>,
-
-    /// Maximum number of results to return (default is 50).
-    /// You can also set limit=1000 to output up to 1000 results.           
-    pub limit: Option<i32>,
-
-    /// Your Alpha Vantage API key. Claim your free API Key [here](https://www.alphavantage.co/support/#api-key).             
-    pub apikey: String,                    
-}
-
-impl QueryParams {
-    pub fn new(
-        apikey: &str,
-        function: &str,
-        tickers: Option<&str>,
-        topics: Option<&str>,
-        time_from: Option<&str>,
-        time_to: Option<&str>,
-        sort: Option<&str>,
-        limit: Option<i32>,
-    ) -> Self {
-        Self {
-            function: function.to_string(),
-            tickers: tickers.map(|t| t.to_string()),
-            topics: topics.map(|t| t.to_string()),
-            time_from: time_from.map(|t| t.to_string()),
-            time_to: time_to.map(|t| t.to_string()),
-            sort: sort.map(|s| s.to_string()),
-            limit: limit,
-            apikey: apikey.to_string(),                   
-        }                                                       
-    }
-}
-impl TryFrom<Value> for QueryParams {
-    type Error = ApiError;
-    fn try_from(value: Value) -> Result<Self, Self::Error> {
-        serde_json::from_value(value).map_err(|err| ApiError::JsonParseError { message: err.to_string() })
-    }    
-}
-
 pub struct AlphaVantageApiClient {
     client: Arc<Client>,
+    cache: Arc<Mutex<SharedLockedCache>>,
     config: Arc<ValueConfig>,
 }
 impl AlphaVantageApiClient {
-        pub fn new(client: Arc<Client>, config: Arc<ValueConfig>) -> Self {
-        Self {client, config}
+        pub fn new(client: Arc<Client>, cache: Arc<Mutex<SharedLockedCache>>, config: Arc<ValueConfig>) -> Self {
+        Self {client, cache, config}
     }
-    pub async fn get(
+
+    async fn get(
+        &self,
+        fetch_type: &FetchType,
+        endpoint: &str,
+        query_params: QueryParams   
+    ) -> Result<Value, ApiError> {
+        match fetch_type {
+            FetchType::AlphaVantage=> {
+                let key = format!("{}_{}_{:?}", variant_name(&fetch_type), endpoint, &query_params);
+                get_resp_value_from_cache_or_fetch(
+                    &self.cache, 
+                    &key, 
+                    || async{self.get_(endpoint, query_params).await},
+                    self.config.task.cache_ttl).await.
+                map_err(|e| { 
+                    warn!("AlphaVantage client encountered an error during GET request.");
+                    e
+                })
+            },
+             _ => return Err(ApiError::RequestError{
+                message: format!("Unsupported task: {:?}", &fetch_type), 
+                status: None, 
+                headers: None, 
+                body:None})
+        }
+    }
+
+    pub async fn get_(
         &self, 
         url: &str, 
         query_params: QueryParams
-    ) -> Result<AlphaVantageApiResponse, ApiError> {
+    ) -> Result<Value, ApiError> {
         // Send GET request
         let response = self
             .client
@@ -376,13 +233,15 @@ impl AlphaVantageApiClient {
         //:        ApiError::JsonParseError { message: e.to_string() }
         //:    })?; // Handle JSON parsing error
 
-        // Attempt to parse the JSON response directly
+        // Attempt to parse the JSON response directly.
+        // Also the only place the Response super-struct `AlphavantageApiResponse` is Actually used.
+        // For data integrity reasons.
         let response_json: AlphaVantageApiResponse = response.json().await.map_err(|e| {
             error!("Failed to read body: {:?}", e);
             ApiError::JsonParseError { message: e.to_string() }
         })?; // Handle JSON parsing error
-
-        Ok(response_json)
+        // Bact to Value.
+        response_json.to_json()
     }
 
     /// Parses the response error from the Alpha Vantage API and constructs an appropriate `ApiError`.
@@ -432,7 +291,8 @@ impl AlphaVantageApiClient {
         }
     }
 
-    fn insert_apikey_and_function(&self, mut value: Value) -> Value {
+    fn insert_apikey_and_function(&self, value: Arc<Value>) -> Value{
+        let mut value = Arc::try_unwrap(value).unwrap_or_else(|v| (*v).clone());
         if let Value::Object(ref mut map) = value {
             map.insert("apikey".to_string(), Value::String(self.config.api.alphavantage.clone()));
             map.insert("function".to_string(), Value::String(BASE_FUNCTION.to_string()));
@@ -440,7 +300,7 @@ impl AlphaVantageApiClient {
         value
     }
 
-    pub async fn poll(&self, args: Value) -> Result<AlphaVantageApiResponse, ApiError> {
+    pub async fn poll(&self, args: Arc<Value>) -> Result<Value, ApiError> {
         // Insert API key & the BASE_FUNVTION into the request body.
         let args = self.insert_apikey_and_function(args);
         // Retry the request up to the maximum number of retries.
@@ -448,10 +308,14 @@ impl AlphaVantageApiClient {
         let max_retries = self.config.task.max_retries;
         let delay_ms = self.config.task.base_delay_ms as u64;
         let delay = Duration::from_millis(delay_ms);
+        let fetch_type = args.get(FETCH_TYPE_KEY_MAP) // which does not get popped out of the query params
+            .and_then(|s| s.as_str())
+            .map(FetchType::from_str)
+            .unwrap_or(FetchType::Unknown);
         loop {
-            match self.get(BASE_URL, QueryParams::try_from(args.clone())?).await {
+            match self.get(&fetch_type, BASE_URL, QueryParams::try_from(args.clone())?).await {
                 Ok(api_response) => {
-                    info!("API GET Response was successfull? : {:?}", bool::from(!api_response.feed.is_empty()));
+                    info!("API GET Response was successfull? : {:?}", bool::from(!api_response.is_null()));
                     return Ok(api_response)
                 },
                 Err(api_error) => {
@@ -473,24 +337,24 @@ impl AlphaVantageApiClient {
 }
 
 /// Example function to demonstrate how to use the Alpha Vantage API.
-pub async fn run(client: Arc<Client>, value_config: Arc<ValueConfig>) -> Result<AlphaVantageApiResponse, ApiError> {
+pub async fn run(client: Arc<Client>, cache: Arc<Mutex<SharedLockedCache>>, config: Arc<ValueConfig>) -> Result<Value, ApiError> {
     // Create configuration.
     // Query parmaters
     let query = QueryParams::new(
-        &value_config.api.alphavantage, 
+        &config.api.alphavantage, 
         BASE_FUNCTION,   // You should not use anything else
         None, // Tickers
         None, // Topics 
-        Some(&time_yyyy_mmdd_thhmm(value_config.request.delay_secs).as_str()), // Time_from 
+        Some(&time_yyyy_mmdd_thhmm(config.request.delay_secs).as_str()), // Time_from 
         None, // Time_to
         None, // Sort
         None  // Limit
     );
     
     // Request Manger
-    let req_manager = AlphaVantageApiClient::new(client, value_config);
+    let req_manager = AlphaVantageApiClient::new(client, cache, config);
     // Make the GET request here.
-    let result = req_manager.get(BASE_URL, query).await
+    let result = req_manager.get_(BASE_URL, query).await
         .map_err(|e| {
             error!("Error during GET request: {}", e); // Log the error
             e // Re-propagate the error without changes

@@ -13,6 +13,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::cache::{Cache, SharedLockedCache};
 use crate::config::ValueConfig;
+use crate::errors::ApiError;
 
 
 pub fn time_rfc3339_opts(secs: i64) -> String {
@@ -103,7 +104,45 @@ where
     info!("Looking in cache for {}...", &key);
     let cache = cache.lock().await;
     if let Some((value, instant)) = cache.get(key).await {
-        info!("Found in cache");
+        info!("Found in cache.");
+        if instant.elapsed() < Duration::from_secs(ttl as u64) {
+            info!("Target data found in cache.");
+            return Ok(value.clone());
+        } else {
+            warn!("Expired key: {}. Removing...", &key);
+            cache.pop(key).await; // Expired
+        }
+    }
+    info!("Target not found in cache. | HTTP GET requested the data...");
+    // Fetch and cache the value
+    let result = fetch_fn().await;
+    match result {
+        Ok(value) => {
+            info!("Got value: {:?}", !value.is_null());
+            cache.put(key.to_string(), (value.clone(), Instant::now())).await;
+            Ok(value)
+        }
+        Err(e) => {
+            error!("Error for GET request: {}", e);
+            Err(e)
+        },
+    }
+}
+
+pub async fn get_resp_value_from_cache_or_fetch<F, Fut>(
+    cache: &Arc<Mutex<SharedLockedCache>>,
+    key: &str,
+    fetch_fn: F,
+    ttl: u32,
+) -> Result<Value, ApiError>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<Value, ApiError>>,
+{
+    info!("Looking in cache for {}...", &key);
+    let cache = cache.lock().await;
+    if let Some((value, instant)) = cache.get(key).await {
+        info!("Found in cache.");
         if instant.elapsed() < Duration::from_secs(ttl as u64) {
             info!("Target data found in cache.");
             return Ok(value.clone());

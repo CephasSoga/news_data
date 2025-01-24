@@ -4,11 +4,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::future::OptionFuture;
-use serde_json::{Value, from_str};
+use serde_json::{Value, from_str, to_value};
 use serde::{Serialize, Deserialize};
 use tokio::sync::Mutex;
 use tracing_subscriber::field::debug; 
-use thiserror::Error;
 use tracing::info;
 
 use crate::config::ValueConfig;
@@ -17,6 +16,8 @@ use crate::request::HTTPClient;
 use crate::options::FetchType;
 use crate::server_types::{FMPArticle, FMPMarketSentiment};
 use crate::utils::{retry, get_from_cache_or_fetch};
+use crate::errors::FMPApiError;
+use crate::options::FMPQueryParams as QueryParams;
 
 const FMP_ARTICLES_V3: &str = "fmp/articles";
 const GENERAL_NEWS_V4: &str = "general_news";
@@ -28,19 +29,6 @@ const PRESS_RELEASES_V3: &str = "press_releases";
 const HISTORICAL_SOCIAL_SENTIMENT_V4: &str = "historical/social-sentiment";
 const TRENDING_SOCIAL_SENTIMENT_V4: &str = "social-sentiments/trending";
 const SOCIAL_SENTIMENT_CHANGES_V4: &str = "social-sentiments/change";
-
-
-#[derive(Debug, Error)]
-pub enum FMPApiError {
-    #[error("Failed to fetch data: {0}")]
-    FetchError(String),
-    
-    #[error("Task encountered an error: {0}")]
-    TaskError(String),
-    
-    #[error("Failed to parse data: {0}")]
-    ParseError(String),
-}
 
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,87 +84,12 @@ pub struct FMPApiResponse {
     first: Option<bool>,
     empty: Option<bool>,
 }
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct QueryParams {
-    /// Symbol. E.g: AAPL.
-    symbol: Option<String>,
-
-    /// A string lis t of tickers. E.g: AAPL,FB
-    tickers: Option<String>,
-
-    /// Date in YYYY-MM-DD format.
-    from: Option<String>,
-
-    /// Date in YYYY-MM-DD format.
-    to: Option<String>,
-
-    /// Limit the number of pages. Default is 1.
-    page: Option<u64>,
-
-    /// Limit the number of results per page. Default is 10.
-    size: Option<u64>,
-
-    /// `bullish` or `bearish`.
-    type_name: Option<String>,
-
-    /// `stockwits`
-    source: Option<String>,
-}
-impl Into<Option<Vec<(String, String)>>> for QueryParams {
-    fn into(self) -> Option<Vec<(String, String)>> {
-        let mut query_params: Vec<(String, String)> = Vec::new();
-        if let Some(symbol) = &self.symbol {
-            query_params.push(("symbol".to_string(), symbol.to_string()));
-        }
-        if let Some(tickers) = &self.tickers {
-            query_params.push(("tickers".to_string(), tickers.to_string()));
-        }
-        if let Some(from) = &self.from {
-            query_params.push(("from".to_string(), from.to_string()));
-        }
-        if let Some(to) = &self.to {
-            query_params.push(("to".to_string(), to.to_string()));
-        }
-        if let Some(page) = &self.page {
-            query_params.push(("page".to_string(), page.to_string()));
-        }
-        if let Some(size) = &self.size {
-            query_params.push(("size".to_string(), size.to_string()));
-        }
-        if let Some(type_name) = &self.type_name {
-            query_params.push(("type_name".to_string(), type_name.to_string()));
-        }
-        if let Some(source) = &self.source {
-            query_params.push(("source".to_string(), source.to_string()));
-        }
-        match query_params.len() {
-            0 => None,
-            _ => Some(query_params),
-        }
-
+impl FMPApiResponse {
+    pub fn to_json(&self) -> Result<Value, FMPApiError> {
+        // TODO: Implement to_json method
+        to_value(self).map_err(|err| FMPApiError::ParseError(err.to_string()))
     }
-}
-
-impl From<Value> for QueryParams {
-    fn from(value: Value) -> Self {
-        QueryParams {
-            symbol: value.get("symbol").and_then(|v| v.as_str().map(|s| s.to_string())),
-            tickers: value.get("tickers").and_then(|v| v.as_str().map(|s| s.to_string())),
-            from: value.get("from").and_then(|v| v.as_str().map(|s| s.to_string())),
-            to: value.get("to").and_then(|v| v.as_str().map(|s| s.to_string())),
-            page: value.get("page").and_then(|v| v.as_u64()),
-            size: value.get("size").and_then(|v| v.as_u64()),
-            type_name: value.get("type_name").and_then(|v| v.as_str().map(|s| s.to_string())),
-            source: value.get("source").and_then(|v| v.as_str().map(|s| s.to_string())),
-        }
-    }
-}
-
-impl Display for  QueryParams {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self)
-    }   
+    
 }
 
 pub struct FMPClient{
@@ -323,68 +236,68 @@ impl FMPClient {
         .map_err(|e| FMPApiError::FetchError(e.to_string()))
     }
 
-    async fn fetch(&self, fetch_type: FetchType, query_params: QueryParams) -> Result<FMPApiResponse, FMPApiError> {
+    async fn fetch(&self, fetch_type: FetchType, query_params: QueryParams) -> Result<Value, FMPApiError> {
         match fetch_type {
             FetchType::FMPArticle => {
                 let result = self.get_fmp_articles(query_params).await?;
                 let articles: FMPApiResponse = self.response_from_value(result, AbstactContent::News)
                     .map_err(|e| FMPApiError::ParseError(e.to_string()))?;
-                Ok(articles)
+                Ok(articles.to_json()?)
             },
             FetchType::GeneralNews => {
                 let result = self.get_general_news(query_params).await?;
                 let articles: FMPApiResponse = self.response_from_value(result, AbstactContent::News)
                     .map_err(|e| FMPApiError::ParseError(e.to_string()))?;
-                Ok(articles)
+                Ok(articles.to_json()?)
             }
             FetchType::StockNews => {
                 let result = self.get_stock_news(query_params).await?;
                 let articles: FMPApiResponse = self.response_from_value(result, AbstactContent::News)
                     .map_err(|e| FMPApiError::ParseError(e.to_string()))?;
-                Ok(articles)
+                Ok(articles.to_json()?)
             },
             FetchType::StockRSS => {
                 let result = self.get_stock_rss(query_params).await?;
                 let articles: FMPApiResponse = self.response_from_value(result, AbstactContent::News)
                     .map_err(|e| FMPApiError::ParseError(e.to_string()))?;
-                Ok(articles)
+                Ok(articles.to_json()?)
             }
             FetchType::ForexNews => {
                 let result = self.get_forex_news(query_params).await?;
                 let articles: FMPApiResponse = self.response_from_value(result, AbstactContent::News)
                     .map_err(|e| FMPApiError::ParseError(e.to_string()))?;
-                Ok(articles)
+                Ok(articles.to_json()?)
             }
             FetchType::CryptoNews => {
                 let result = self.get_crypto_news(query_params).await?;
                 let articles: FMPApiResponse = self.response_from_value(result, AbstactContent::News)
                     .map_err(|e| FMPApiError::ParseError(e.to_string()))?;
-                Ok(articles)
+                Ok(articles.to_json()?)
             }
             FetchType::PressReleases => {
                 let result = self.get_press_releases(query_params).await?;
                 let articles: FMPApiResponse = self.response_from_value(result, AbstactContent::News)
                     .map_err(|e| FMPApiError::ParseError(e.to_string()))?;
-                Ok(articles)
+                Ok(articles.to_json()?)
             }
 
             FetchType::SocialSentimentHistory => {
                 let result = self.get_historical_social_sentiment(query_params).await?;
                 let articles: FMPApiResponse = self.response_from_value(result, AbstactContent::MarketSentiment)
                     .map_err(|e| FMPApiError::ParseError(e.to_string()))?;
-                Ok(articles)
+                Ok(articles.to_json()?)
             }
             FetchType::SocialSentimentTrending => {
                 let result = self.get_trending_social_sentiment(query_params).await?;
                 let articles: FMPApiResponse = self.response_from_value(result, AbstactContent::MarketSentiment)
                     .map_err(|e| FMPApiError::ParseError(e.to_string()))?;
-                Ok(articles)
+                Ok(articles.to_json()?)
             }
             FetchType::SocialSentimentChanges => {
                 let result = self.get_social_sentiment_changes(query_params).await?;
                 let articles: FMPApiResponse = self.response_from_value(result, AbstactContent::MarketSentiment)
                     .map_err(|e| FMPApiError::ParseError(e.to_string()))?;
-                Ok(articles)
+                Ok(articles.to_json()?)
             }
 
             _ => Err(FMPApiError::TaskError(format!("Fetch type `{}` is not supported.", fetch_type))),
@@ -435,7 +348,7 @@ impl FMPClient {
         })
     }
 
-    pub async fn poll(&self, args: Value) -> Result<FMPApiResponse, FMPApiError> {
+    pub async fn poll(&self, args: Arc<Value>) -> Result<Value, FMPApiError> {
         let query_params = QueryParams::from(args.clone());
         let fetch_type = FetchType::from(args);
         retry(

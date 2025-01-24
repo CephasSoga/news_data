@@ -16,11 +16,17 @@ use std::hash::{Hash, Hasher};
 
 use reqwest::{Client, Response, StatusCode};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, from_str, to_string};
+use serde_json::{Value, from_str, to_value};
 use tracing::{warn, debug, info, error};
+use tokio::sync::Mutex;
 
+use crate::cache::SharedLockedCache;
 use crate::config::ValueConfig;
-use crate::utils::time_rfc3339_opts;
+use crate::utils::{get_resp_value_from_cache_or_fetch, time_rfc3339_opts};
+use twitter_v2::oauth2::helpers::variant_name;
+use crate::options::FetchType;
+use crate::errors::{AbstractApiError, ApiError};
+use crate::options::MAQueryParams as QueryParams;
 
 const BASE_URL: &str = "https://api.marketaux.com/v1/news";
 pub const ALL_NEWS_ENDPOINT: &str = "all";
@@ -28,108 +34,8 @@ pub const SIMILAR_NEWS_ENDPOINT: &str = "similar";
 pub const NEWS_BY_UUID: &str = "uuid";
 const ENDPONT_MAP_KEY: &str = "endpoint";
 const API_TOKEN_MAP_KEY: &str = "api_token";
+const FETCH_TYPE_KEY_MAP: &str = "fetch_type";
 
-/// Define an abstract error enum.
-#[derive(Debug)]
-pub enum AbstractApiError {
-    /// Abstracts the `BAD_REQUEST` errors.
-    RequestError,
-
-    /// Absctracts `Rate Limit Exceeded` errors.
-    RateLimitError,
-
-    /// Abstracts `INTERNAL_SERVER_ERROR` errors
-    ServerError,
-
-    /// Abstracts `REQUEST_TIMEOUT` errors.
-    NetworkError,
-
-    /// Abstracts all other errors,
-    UnhandledError,
-}
-
-/// Enum for custom error types that extend the `AbstractApiError` Enum.
-#[derive(Debug)]
-pub enum ApiError {
-    /// Represents a request error with optional `status`, `headers` and `body` details.
-    RequestError {
-        message: String,
-        status: Option<StatusCode>,
-        headers: Option<reqwest::header::HeaderMap>,
-        body: Option<String>,
-    },
-    /// Represents a rate limit error with optional `status`, `headers` and `body` details.
-    RateLimitError {
-        message: String,
-        status: Option<StatusCode>,
-        headers: Option<reqwest::header::HeaderMap>,
-        body: Option<String>,
-    },
-    /// Represents a server error with optional `status`, `headers` and `body` details.
-    ServerError {
-        message: String,
-        status: Option<StatusCode>,
-        headers: Option<reqwest::header::HeaderMap>,
-        body: Option<String>,
-    },
-    /// Represents a JSON parsing error.
-    JsonParseError {
-        message: String,
-    },
-    /// Represents a network error with optional `status`, `headers` and `body` details.
-    NetworkError {
-        message: String,
-        status: Option<StatusCode>,
-        headers: Option<reqwest::header::HeaderMap>,
-        body: Option<String>,
-    },
-    /// When no endpoint was provided.
-    NoEndpointProvided,
-    /// Represents an unhandled error with optional `status`, `headers` and `body` details.
-    UnhandledError {
-        message: String,
-        status: Option<StatusCode>,
-        headers: Option<reqwest::header::HeaderMap>,
-        body: Option<String>,
-    },
-}
-
-// Implement Display for ApiError
-impl fmt::Display for ApiError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ApiError::RequestError { message, status, headers, body } => {
-                write!(f, "Request Error: {} | Status: {:?} | Headers: {:?} | Body: {}", 
-                       message, status, headers, body.as_ref().unwrap_or(&"".to_string()))
-            }
-            ApiError::RateLimitError { message, status, headers, body } => {
-                write!(f, "Rate Limit Error: {} | Status: {:?} | Headers: {:?} | Body: {}", 
-                       message, status, headers, body.as_ref().unwrap_or(&"".to_string()))
-            }
-            ApiError::ServerError { message, status, headers, body } => {
-                write!(f, "Server Error: {} | Status: {:?} | Headers: {:?} | Body: {}", 
-                       message, status, headers, body.as_ref().unwrap_or(&"".to_string()))
-            }
-            ApiError::JsonParseError { message} => {
-                write!(f, "JSON Parse Error: {}", message)
-            }
-            ApiError::NetworkError { message, status, headers, body } => {
-                write!(f, "Network Error: {} | Status: {:?} | Headers: {:?} | Body: {}", 
-                       message, status, headers, body.as_ref().unwrap_or(&"".to_string()))
-            }
-            ApiError::NoEndpointProvided => {
-                write!(f, "No endpoint provided")
-            }
-            ApiError::UnhandledError { message, status, headers, body } => {
-                write!(f, "Unhandled Error: {} | Status: {:?} | Headers: {:?} | Body: {}", 
-                       message, status, headers, body.as_ref().unwrap_or(&"".to_string()))
-            }
-        }
-    }
-}
-
-// Implement std::error::Error for ApiError.
-impl std::error::Error for ApiError {}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 /// Represents the response from the Marketaux API.
@@ -157,8 +63,8 @@ impl MarketAuxResponse {
         from_str(json)
     }
 
-    pub fn to_json(&self) -> Result<String, serde_json::Error> {
-        to_string(self)
+    pub fn to_json(&self) -> Result<Value, ApiError> {
+        to_value(self).map_err(|err| ApiError::JsonParseError { message: err.to_string()})
     }
 
     pub fn from_hashmap(map: std::collections::HashMap<String, serde_json::Value>) -> Result<Self, serde_json::Error> {
@@ -237,180 +143,16 @@ pub struct Highlight {
     pub highlighted_in: Option<String>,
 }
 
-#[derive(Serialize, Deserialize)]
-/// Represents the HTTP request parameters for the Marketaux API.
-///
-/// This struct contains all the parameters that can be used to customize the API request
-/// to fetch financial news articles. Each field corresponds to a specific query parameter
-/// that can be included in the request.
-pub struct QueryParams {
-    /// Your Marketaux API key.
-    api_token: String,
-
-    /// Specify entity symbol(s) identified within the article.
-    /// Example: symbols=TSLA,AMZN,MSFT
-    symbols: Option<String>,
-
-    /// Specify the type of entities identified within the article.
-    /// Example: entity_types=index,equity
-    entity_types: Option<String>,
-
-    /// Specify the industries of entities identified within the article.
-    /// Example: industries=Technology,Industrials
-    industries: Option<String>,
-
-    /// Specify the country of the exchange for identified entities within the article.
-    /// Example: countries=us,ca
-    countries: Option<String>,
-
-    /// Find articles with entities having a sentiment score greater than or equal to x.
-    /// Example: sentiment_gte=0 - Finds articles that are neutral or positive.
-    sentiment_gte: Option<i32>,
-
-    /// Find articles with entities having a sentiment score less than or equal to x.
-    /// Example: sentiment_lte=0 - Finds articles that are neutral or negative.
-    sentiment_lte: Option<i32>,
-
-    /// Find articles with entities having a match score greater than or equal to min_match_score.
-    min_match_score: Option<f32>,
-
-    /// By default, all entities for each article are returned.
-    /// Set this to true to return only relevant entities for your query.
-    /// Example: filter_entities=true (Only relevant entities will be returned).
-    filter_entities: Option<bool>,
-
-    /// Set to true to ensure at least one entity is identified within the article.
-    /// By default, all articles are returned. Defaults to FALSE.
-    must_have_entities: Option<bool>,
-
-    /// Group similar articles to avoid displaying multiple articles on the same topic/subject.
-    /// Default is true.
-    group_similar: Option<bool>,
-
-    /// Use to search for specific terms or phrases in articles.
-    /// Supports advanced query usage with operators (+, |, -, ", *, ( ) )
-    /// Example: search="ipo" -nyse (Searches for articles mentioning "ipo" but not NYSE).
-    search: Option<String>,
-
-    /// Specify a comma-separated list of domains to include in the search.
-    /// Example: domains=adweek.com,adage.com
-    domains: Option<String>,
-
-    /// Specify a comma-separated list of domains to exclude from the search.
-    /// Example: exclude_domains=example.com
-    exclude_domains: Option<String>,
-
-    /// Specify a comma-separated list of source IDs to include in the search.
-    /// Example: source_ids=adweek.com-1,adage.com-1
-    source_ids: Option<String>,
-
-    /// Specify a comma-separated list of source IDs to exclude from the search.
-    exclude_source_ids: Option<String>,
-
-    /// Specify a comma-separated list of languages to include. Default is all languages.
-    /// Example: language=en,es (Includes English and Spanish articles).
-    language: Option<String>,
-
-    /// Find articles published before the specified date.
-    /// Example: published_before=2024-12-05T08:25:06
-    published_before: Option<String>,
-
-    /// Find articles published after the specified date.
-    /// Example: published_after=2024-12-05T08:25:06
-    published_after: Option<String>,
-
-    /// Find articles published on the specified date.
-    /// Example: published_on=2024-12-05
-    published_on: Option<String>,
-
-    /// Sort articles by published date, entity match score, entity sentiment score, or relevance score.
-    /// Example: sort=entity_match_score
-    sort: Option<String>,
-
-    /// Specify the sort order for the sort parameter. Options: "desc" | "asc".
-    /// Default is "desc".
-    sort_order: Option<String>,
-
-    /// Specify the number of articles to return. Default is the maximum specified for your plan.
-    /// Example: limit=50
-    limit: Option<i32>,
-
-    /// Use for pagination to navigate through the result set. Default is 1.
-    /// Example: page=2
-    page: Option<i32>,
-}
-
-impl QueryParams {
-    /// Creates a new instance of QueryParams with required and optional parameters.
-    pub fn new(
-        apikey: &str,
-        symbols: Option<&str>,
-        entity_types: Option<&str>,
-        industries: Option<&str>,
-        countries: Option<&str>,
-        sentiment_gte: Option<i32>,
-        sentiment_lte: Option<i32>,
-        min_match_score: Option<f32>,
-        filter_entities: Option<bool>,
-        must_have_entities: Option<bool>,
-        group_similar: Option<bool>,
-        search: Option<&str>,
-        domains: Option<&str>,
-        exclude_domains: Option<&str>,
-        source_ids: Option<&str>,
-        exclude_source_ids: Option<&str>,
-        language: Option<&str>,
-        published_before: Option<&str>,
-        published_after: Option<&str>,
-        published_on: Option<&str>,
-        sort: Option<&str>,
-        sort_order: Option<&str>,
-        limit: Option<i32>,
-        page: Option<i32>,
-    ) -> Self {
-        Self {
-            api_token: apikey.to_string(),
-            symbols: symbols.map(|s| s.to_string()),
-            entity_types: entity_types.map(|s| s.to_string()),
-            industries: industries.map(|s| s.to_string()),
-            countries: countries.map(|s| s.to_string()),
-            sentiment_gte,
-            sentiment_lte,
-            min_match_score,
-            filter_entities,
-            must_have_entities,
-            group_similar,
-            search: search.map(|s| s.to_string()),
-            domains: domains.map(|s| s.to_string()),
-            exclude_domains: exclude_domains.map(|s| s.to_string()),
-            source_ids: source_ids.map(|s| s.to_string()),
-            exclude_source_ids: exclude_source_ids.map(|s| s.to_string()),
-            language: language.map(|s| s.to_string()),
-            published_before: published_before.map(|s| s.to_string()),
-            published_after: published_after.map(|s| s.to_string()),
-            published_on: published_on.map(|s| s.to_string()),
-            sort: sort.map(|s| s.to_string()),
-            sort_order: sort_order.map(|s| s.to_string()),
-            limit,
-            page,
-        }
-    }
-}
-impl TryFrom<Value> for QueryParams {
-    type Error = ApiError;
-    fn try_from(value: Value) -> Result<Self, Self::Error> {
-        serde_json::from_value(value).map_err(|err| ApiError::JsonParseError { message: err.to_string() })
-    }    
-}
 
 pub struct MarketAuxApiClient {
     client: Arc<Client>,
+    cache: Arc<Mutex<SharedLockedCache>>,
     config: Arc<ValueConfig>,
 }
 impl MarketAuxApiClient {
 
-    pub fn new(client: Arc<Client>, config: Arc<ValueConfig>) -> Self {
-        Self {client,  config}
+    pub fn new(client: Arc<Client>, cache: Arc<Mutex<SharedLockedCache>>, config: Arc<ValueConfig>) -> Self {
+        Self {client, cache, config}
     }
 
     fn append_to_base_url(&self, endpoint: &str) -> String {
@@ -419,9 +161,36 @@ impl MarketAuxApiClient {
 
     async fn get(
         &self,
+        fetch_type: &FetchType,
+        endpoint: &str,
+        query_params: Option<QueryParams>   
+    ) -> Result<Value, ApiError> {
+        match fetch_type {
+            FetchType::MarketAux => {
+                let key = format!("{}_{}_{:?}", variant_name(&fetch_type), endpoint, &query_params);
+                get_resp_value_from_cache_or_fetch(
+                    &self.cache, 
+                    &key, 
+                    || async{self.get_(endpoint, query_params).await},
+                    self.config.task.cache_ttl).await.
+                map_err(|e| { 
+                    warn!("AlphaVantage client encountered an error during GET request.");
+                    e
+                })
+            },
+            _ => return Err(ApiError::RequestError{
+                message: format!("Unsupported task: {:?}", &fetch_type), 
+                status: None, 
+                headers: None, 
+                body:None})
+        }
+    }
+
+    async fn get_(
+        &self,
         endpoint: &str,
         query_params: Option<QueryParams>
-    ) -> Result<MarketAuxResponse, ApiError> {
+    ) -> Result<Value, ApiError> {
             // Send GET request
             let response = self
             .client
@@ -485,12 +254,14 @@ impl MarketAuxApiClient {
         //:    })?; // Handle JSON parsing error
 
         // Attempt to parse the JSON response directly
+        // Also the only place the Response super-struct `MarketAuxResponse` is Actually used.
+        // For data integrity reasons.
         let response_json: MarketAuxResponse = response.json().await.map_err(|e| {
             error!("Failed to read body: {:?}", e);
             ApiError::JsonParseError { message: e.to_string() }
         })?; // Handle JSON parsing error
 
-        Ok(response_json)
+        response_json.to_json()
     }
 
     async fn parse_resp_error(&self, message: String, response: Response, abstract_error_type: AbstractApiError) -> ApiError {
@@ -539,25 +310,27 @@ impl MarketAuxApiClient {
         }
     }
 
-    fn insert_api_token(&self, mut value: Value) -> Value {
+    fn insert_api_token(&self, value: Arc<Value>) -> Arc<Value> {
+        let mut value = Arc::try_unwrap(value).unwrap_or_else(|v| (*v).clone());
         if let Value::Object(ref mut map) = value {
             map.insert(API_TOKEN_MAP_KEY.to_string(), Value::String(self.config.api.marketaux.clone()));
         }
-        value
+        Arc::new(value)
     }
 
-    fn pop_endpoint(&self, mut value: Value) -> Option<((String, Value), Value)> {
+    fn pop_endpoint(&self, value: Arc<Value>) -> Option<((String, Value), Arc<Value>)> {
+        let mut value = Arc::try_unwrap(value).unwrap_or_else(|v| (*v).clone());
         if let Value::Object(ref mut map) = value {
             Some((map
                     .remove_entry(ENDPONT_MAP_KEY)
-                    .unwrap_or((ENDPONT_MAP_KEY.to_string(), Value::String("".to_string()))), value)
+                    .unwrap_or((ENDPONT_MAP_KEY.to_string(), Value::String("".to_string()))), Arc::new(value))
             )
         } else {
             None
         }
     }
 
-    pub async fn poll(&self, args: Value) -> Result<MarketAuxResponse, ApiError> {
+    pub async fn poll(&self, args: Arc<Value>) -> Result<Value, ApiError> {
         // Insert API token into the provided args value.
         let args = self.insert_api_token(args);
         // Extract the endpoint from the provided args value.
@@ -569,10 +342,14 @@ impl MarketAuxApiClient {
             let max_retries = self.config.task.max_retries;
             let delay_ms = self.config.task.base_delay_ms as u64;
             let delay = Duration::from_millis(delay_ms);
+            let fetch_type = args.get(FETCH_TYPE_KEY_MAP) // which does not get popped out of the query params
+                .and_then(|s| s.as_str())
+                .map(FetchType::from_str)
+                .unwrap_or(FetchType::Unknown);
             loop {
-                match self.get(endpoint, Some(QueryParams::try_from(args.clone())?)).await {
+                match self.get(&fetch_type, endpoint, Some(QueryParams::try_from(args.clone())?)).await {
                     Ok(response) => {
-                        info!("API GET Response was successful? : {:?}", bool::from(response.meta.returned > 0));
+                        info!("API GET Response was successful? : {:?}", bool::from(!response.is_null()));
                         return Ok(response);
                     }
                     Err(error) => {
@@ -594,10 +371,10 @@ impl MarketAuxApiClient {
     }
 }
 
-pub async fn run(endpoint: &str, client: Arc<Client>, value_config: Arc<ValueConfig>) -> Result<MarketAuxResponse, ApiError> {
+pub async fn run(endpoint: &str, client: Arc<Client>, cache: Arc<Mutex<SharedLockedCache>>, config: Arc<ValueConfig>) -> Result<Value, ApiError> {
     // Construct query parameters for the API request, currently set to None for all optional fields.
     let query = QueryParams::new(
-        &value_config.api.marketaux, 
+        &config.api.marketaux, 
         None, // Symbols, 
         None, // entity_types, 
         None, // industries, 
@@ -615,7 +392,7 @@ pub async fn run(endpoint: &str, client: Arc<Client>, value_config: Arc<ValueCon
         None, // exclude_source_ids, 
         None, // language, 
         None, // published_before, 
-        Some(&time_rfc3339_opts(value_config.request.delay_secs).as_str()), // published_after, 
+        Some(&time_rfc3339_opts(config.request.delay_secs).as_str()), // published_after, 
         None, // published_on, 
         None, // sort, 
         None, // sort_order, 
@@ -623,10 +400,10 @@ pub async fn run(endpoint: &str, client: Arc<Client>, value_config: Arc<ValueCon
         None); // page
 
     // Initialize the request manager with the created client.
-    let req_manager = MarketAuxApiClient::new(client, value_config);
+    let req_manager = MarketAuxApiClient::new(client, cache, config);
 
     // Send a GET request to the Marketaux API and await the result.
-    let result = req_manager.get(endpoint, Some(query)).await
+    let result = req_manager.get_(endpoint, Some(query)).await
         .map_err(|e|  {
             error!("Error during GET request: {}", e); // Log error
             e // Repropagate error
